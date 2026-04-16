@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import tkinter as tk
@@ -259,6 +260,35 @@ def main() -> int:
     except tk.TclError:
         pass
     MacApp(root)
+
+    # Try hard to bring the window to the foreground on macOS launch.
+    root.update_idletasks()
+    root.deiconify()
+    root.lift()
+    try:
+        root.focus_force()
+    except tk.TclError:
+        pass
+    try:
+        root.attributes("-topmost", True)
+        root.after(250, lambda: root.attributes("-topmost", False))
+    except tk.TclError:
+        pass
+    try:
+        subprocess.run(
+            [
+                "osascript",
+                "-e",
+                'tell application "System Events" to set frontmost of the first process whose unix id is '
+                f'{os.getpid()} to true',
+            ],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        pass
+
     root.mainloop()
     return 0
 

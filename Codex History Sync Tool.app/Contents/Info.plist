@@ -8,6 +8,8 @@
   <string>Codex History Sync Tool</string>
   <key>CFBundleExecutable</key>
   <string>CodexHistorySyncTool</string>
+  <key>CFBundleIconFile</key>
+  <string>AppIcon</string>
   <key>CFBundleIdentifier</key>
   <string>com.panrui.codex-history-sync-tool</string>
   <key>CFBundleInfoDictionaryVersion</key>
