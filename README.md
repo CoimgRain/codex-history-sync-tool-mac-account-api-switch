@@ -20,13 +20,21 @@
 
 推荐下载发布包里的：
 
-- `Codex-History-Sync-Tool-v1.5.dmg`
+- `Codex-History-Sync-Tool-v1.5.1.dmg`
 
 下载后打开 DMG，把 `Codex History Sync Tool.app` 拖到 `Applications`，再双击打开。
 
 如果 macOS 提示来自未验证开发者，可以在 Finder 中右键 app，选择“打开”，再确认一次。
 
 如果 DMG 或 app 仍然打不开，可以打开系统设置里的“隐私与安全性”，在安全提示处选择“仍要打开”。
+
+如果双击后窗口一闪而过，通常是这台 Mac 没有可用的 `python3 + tkinter`。v1.5.1 起启动器会弹出明确提示，并把日志写到：
+
+```text
+~/Library/Logs/Codex History Sync Tool/launcher.log
+```
+
+这种情况建议安装 python.org 的 macOS Python 3 后再打开工具。
 
 ## 这个工具能做什么
 
@@ -66,7 +74,7 @@
 下载并解压：
 
 ```text
-Codex-History-Sync-Tool-v1.5.dmg
+Codex-History-Sync-Tool-v1.5.1.dmg
 ```
 
 打开 DMG 后把 app 拖到 Applications，然后双击：
