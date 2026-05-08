@@ -55,7 +55,11 @@ class MacApp:
 
         warning = ttk.Label(
             frame,
-            text="建议先关闭 Codex Desktop 再执行同步或恢复；mac 版会直接调用同一套后端逻辑。",
+            text=(
+                "建议先关闭 Codex Desktop 再执行同步或恢复；mac 版会直接调用同一套后端逻辑。\n"
+                "支持 OpenAI/Plus 账号登录和 API 登录，两种方式都可以刷新状态并同步历史。"
+            ),
+            justify="left",
         )
         warning.pack(anchor="w", pady=(6, 12))
 
@@ -133,7 +137,9 @@ class MacApp:
             return
 
         self.current_status = payload
-        self.provider_label.config(text=f"当前 provider: {payload['current_provider']}")
+        provider_source = payload.get("current_provider_source")
+        source_text = f" ({provider_source})" if provider_source else ""
+        self.provider_label.config(text=f"当前 provider: {payload['current_provider']}{source_text}")
         self.model_label.config(text=f"当前模型: {payload.get('current_model') or '未读取到'}")
         self.summary_label.config(
             text=f"线程总数: {payload['total_threads']}    可同步线程: {payload['movable_threads']}"
