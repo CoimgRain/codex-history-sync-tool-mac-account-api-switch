@@ -18,44 +18,122 @@ display dialog "$message" buttons {"OK"} default button "OK" with icon caution
 OSA
 }
 
+prompt_install_python() {
+  /usr/bin/osascript <<'OSA' 2>/dev/null
+set dialogResult to display dialog "Codex History Sync Tool 需要 Python 3 和 tkinter 才能打开图形界面。\n\n这台 Mac 当前没有检测到可用环境。是否从 python.org 下载并安装官方 Python 3.13.13？\n\n安装包约 68MB，安装时 macOS 会要求输入管理员密码。" buttons {"取消", "安装 Python 3"} default button "安装 Python 3" cancel button "取消" with icon caution
+button returned of dialogResult
+OSA
+}
+
+escape_applescript_string() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  print -r -- "$value"
+}
+
+find_python_with_tkinter() {
+  PYTHON_BIN=""
+  typeset -a candidates
+  candidates=(
+    "/Library/Frameworks/Python.framework/Versions/Current/bin/python3"
+    "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"
+    "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3"
+    "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3"
+    "/Library/Frameworks/Python.framework/Versions/3.11/bin/python3"
+    "/opt/homebrew/bin/python3"
+    "/usr/local/bin/python3"
+    "/opt/anaconda3/bin/python3"
+    "/Library/Developer/CommandLineTools/usr/bin/python3"
+    "/usr/bin/python3"
+  )
+
+  local path_python
+  path_python="$(command -v python3 2>/dev/null || true)"
+  if [[ -n "$path_python" ]]; then
+    candidates+=("$path_python")
+  fi
+
+  local candidate
+  for candidate in "${candidates[@]}"; do
+    log "Checking Python candidate: $candidate"
+    if [[ -x "$candidate" ]] && "$candidate" - <<'PY' >/dev/null 2>&1
+import tkinter
+PY
+    then
+      PYTHON_BIN="$candidate"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+install_official_python() {
+  local python_version="3.13.13"
+  local pkg_name="python-${python_version}-macos11.pkg"
+  local installer_url="https://www.python.org/ftp/python/${python_version}/${pkg_name}"
+  local cache_dir="${TMPDIR:-/tmp}/CodexHistorySyncTool"
+  local pkg_path="$cache_dir/$pkg_name"
+
+  log "Preparing Python installer: $installer_url"
+  mkdir -p "$cache_dir"
+
+  if [[ ! -f "$pkg_path" ]]; then
+    log "Downloading Python installer to: $pkg_path"
+    if ! /usr/bin/curl --location --fail --silent --show-error --output "$pkg_path" "$installer_url" >> "$LOG_FILE" 2>&1; then
+      log "Python installer download failed."
+      rm -f "$pkg_path"
+      show_error "Python 3 安装包下载失败。\n\n请检查网络后重试，或手动安装 python.org 的 macOS Python 3。\n\n下载地址：$installer_url\n\n日志位置：$LOG_FILE"
+      return 1
+    fi
+  else
+    log "Reusing cached Python installer: $pkg_path"
+  fi
+
+  log "Checking Python installer signature."
+  /usr/sbin/pkgutil --check-signature "$pkg_path" >> "$LOG_FILE" 2>&1 || log "Installer signature check returned a warning."
+
+  local escaped_pkg_path
+  escaped_pkg_path="$(escape_applescript_string "$pkg_path")"
+  log "Running Python installer with administrator privileges."
+  if ! /usr/bin/osascript <<OSA >> "$LOG_FILE" 2>&1
+do shell script "/usr/sbin/installer -pkg \"$escaped_pkg_path\" -target /" with administrator privileges
+OSA
+  then
+    log "Python installer failed or was cancelled."
+    show_error "Python 3 安装没有完成。\n\n如果你刚才取消了管理员授权，可以重新打开本工具再试一次。\n\n日志位置：$LOG_FILE"
+    return 1
+  fi
+
+  log "Python installer completed."
+  return 0
+}
+
 log "Launcher started: $0"
 log "Resources: $RESOURCES_DIR"
 
 PYTHON_BIN=""
-typeset -a candidates
-candidates=(
-  "/Library/Frameworks/Python.framework/Versions/Current/bin/python3"
-  "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"
-  "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3"
-  "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3"
-  "/Library/Frameworks/Python.framework/Versions/3.11/bin/python3"
-  "/opt/homebrew/bin/python3"
-  "/usr/local/bin/python3"
-  "/opt/anaconda3/bin/python3"
-  "/Library/Developer/CommandLineTools/usr/bin/python3"
-  "/usr/bin/python3"
-)
-
-path_python="$(command -v python3 2>/dev/null || true)"
-if [[ -n "$path_python" ]]; then
-  candidates+=("$path_python")
-fi
-
-for candidate in "${candidates[@]}"; do
-  log "Checking Python candidate: $candidate"
-  if [[ -x "$candidate" ]] && "$candidate" - <<'PY' >/dev/null 2>&1
-import tkinter
-PY
-  then
-    PYTHON_BIN="$candidate"
-    break
-  fi
-done
+find_python_with_tkinter || true
 
 if [[ -z "$PYTHON_BIN" ]]; then
   log "No usable Python with tkinter found."
-  show_error "Codex History Sync Tool 无法启动：找不到带 tkinter 的 Python 3。\n\n请安装 python.org 的 macOS Python 3，然后重新打开本工具。\n\n日志位置：$LOG_FILE"
-  exit 1
+  install_choice="$(prompt_install_python || true)"
+  if [[ "$install_choice" != "安装 Python 3" ]]; then
+    log "User cancelled Python installation prompt."
+    exit 1
+  fi
+
+  if install_official_python; then
+    log "Rechecking Python after installer."
+    find_python_with_tkinter || true
+  fi
+
+  if [[ -z "$PYTHON_BIN" ]]; then
+    log "No usable Python with tkinter found after installer."
+    show_error "Codex History Sync Tool 仍然找不到带 tkinter 的 Python 3。\n\n请重新打开本工具；如果还不行，请手动安装 python.org 的 macOS Python 3。\n\n日志位置：$LOG_FILE"
+    exit 1
+  fi
 fi
 
 log "Using Python: $PYTHON_BIN"
