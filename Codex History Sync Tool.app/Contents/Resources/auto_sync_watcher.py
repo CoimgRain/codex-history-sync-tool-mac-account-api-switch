@@ -82,6 +82,10 @@ def run_backend(
     return payload
 
 
+def pending_work_count(payload: dict[str, object]) -> int:
+    return int(payload.get("movable_threads") or 0) + int(payload.get("model_movable_threads") or 0)
+
+
 def sync_if_needed(
     backend: Path,
     codex_home: str | None,
@@ -90,18 +94,24 @@ def sync_if_needed(
 ) -> None:
     status = run_backend(backend, "status", codex_home, timeout_seconds=30)
     movable_threads = int(status.get("movable_threads") or 0)
+    model_movable_threads = int(status.get("model_movable_threads") or 0)
+    pending_threads = pending_work_count(status)
     current_provider = str(status.get("current_provider") or "").strip()
-    append_log(log_path, f"Codex opened: provider={current_provider}, movable_threads={movable_threads}")
+    append_log(
+        log_path,
+        f"Codex opened: provider={current_provider}, "
+        f"movable_threads={movable_threads}, model_movable_threads={model_movable_threads}",
+    )
     if not current_provider:
         append_log(log_path, "Auto sync skipped: current provider is empty")
         return
 
     settings = load_settings(settings_path)
-    if movable_threads <= 0:
+    if pending_threads <= 0:
         settings["last_provider"] = current_provider
         settings["last_provider_seen_at"] = datetime.now().isoformat(timespec="seconds")
         save_settings(settings_path, settings)
-        append_log(log_path, "Auto sync skipped: no movable threads")
+        append_log(log_path, "Auto sync skipped: no movable or model-mismatched threads")
         return
 
     payload = run_backend(backend, "sync", codex_home, timeout_seconds=120)

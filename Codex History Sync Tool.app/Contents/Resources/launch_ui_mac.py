@@ -25,6 +25,8 @@ CODEX_BUNDLE_ID = "com.openai.codex"
 CODEX_APP_PATH = "/Applications/Codex.app"
 CODEX_RESTART_WAIT_SECONDS = 20
 CODEX_QUIT_WAIT_SECONDS = 12
+STARTUP_STATUS_SETTLE_SECONDS = 2.0
+STARTUP_SYNC_RETRY_LIMIT = 3
 
 
 def run_backend(*args: str, codex_home: str | None = None, timeout_seconds: int | None = None) -> dict:
@@ -47,6 +49,27 @@ def run_backend(*args: str, codex_home: str | None = None, timeout_seconds: int 
     if completed.returncode != 0 or not payload.get("ok"):
         raise RuntimeError(payload.get("error") or text)
     return payload
+
+
+def status_signature(payload: dict) -> tuple[object, ...]:
+    return (
+        payload.get("current_provider"),
+        payload.get("current_model"),
+        payload.get("total_threads"),
+        payload.get("movable_threads"),
+        payload.get("movable_database_threads"),
+        payload.get("movable_session_threads"),
+        payload.get("provider_movable_session_meta_entries"),
+        payload.get("missing_session_index_entries"),
+    )
+
+
+def pending_work_count(payload: dict) -> int:
+    return (
+        int(payload.get("movable_threads") or 0)
+        + int(payload.get("model_movable_threads") or 0)
+        + int(payload.get("provider_movable_session_meta_entries") or 0)
+    )
 
 
 def load_settings() -> dict[str, object]:
@@ -219,9 +242,10 @@ class MacApp:
         self.current_status: dict | None = None
         self.backup_map: dict[str, str] = {}
         self.refresh_in_progress = False
+        self.startup_auto_sync_in_progress = False
 
         self._build_ui()
-        self.root.after(100, self.refresh_status)
+        self.root.after(100, self.startup_refresh_and_sync)
         self.root.after(800, self.ensure_autosync_agent_if_enabled)
 
     def _build_ui(self) -> None:
@@ -370,6 +394,89 @@ class MacApp:
         except Exception as exc:
             self.append_log(f"后台自动同步监听启动失败: {exc}")
 
+    def startup_refresh_and_sync(self) -> None:
+        if self.startup_auto_sync_in_progress:
+            return
+        self.startup_auto_sync_in_progress = True
+        self.refresh_button.configure(text="启动同步中...", state="disabled")
+        self.append_log("启动后正在刷新状态并检查是否需要同步。")
+        threading.Thread(target=self.startup_refresh_and_sync_worker, daemon=True).start()
+
+    def startup_refresh_and_sync_worker(self) -> None:
+        try:
+            status = run_backend("status", codex_home=self.get_codex_home(), timeout_seconds=30)
+            time.sleep(STARTUP_STATUS_SETTLE_SECONDS)
+            second_status = run_backend("status", codex_home=self.get_codex_home(), timeout_seconds=30)
+        except Exception as exc:
+            self.root.after(0, lambda exc=exc: self.finish_startup_refresh_and_sync(error=exc))
+            return
+        if status_signature(status) != status_signature(second_status):
+            self.root.after(0, lambda: self.append_log("启动状态仍在变化，已等待一次后使用最新状态继续同步。"))
+        status = second_status
+
+        pending_threads = pending_work_count(status)
+        if pending_threads <= 0:
+            self.root.after(0, lambda status=status: self.finish_startup_refresh_and_sync(status=status))
+            return
+
+        self.root.after(
+            0,
+            lambda pending_threads=pending_threads: self.append_log(
+                f"启动后发现 {pending_threads} 个待同步或待更新线程，正在自动同步到当前。"
+            ),
+        )
+        last_payload: dict | None = None
+        last_error: Exception | None = None
+        for attempt in range(1, STARTUP_SYNC_RETRY_LIMIT + 1):
+            try:
+                payload = run_backend("sync", codex_home=self.get_codex_home(), timeout_seconds=120)
+                last_payload = payload
+                after_status = payload.get("status") if isinstance(payload.get("status"), dict) else None
+                remaining = pending_work_count(after_status or {})
+                if remaining <= 0:
+                    break
+                self.root.after(
+                    0,
+                    lambda attempt=attempt, remaining=remaining: self.append_log(
+                        f"启动自动同步第 {attempt} 次后仍有 {remaining} 个待同步或待更新线程，准备重试。"
+                    ),
+                )
+                time.sleep(STARTUP_STATUS_SETTLE_SECONDS)
+            except Exception as exc:
+                last_error = exc
+                break
+
+        if last_payload is not None:
+            self.root.after(0, lambda payload=last_payload: self.finish_startup_refresh_and_sync(sync_payload=payload))
+            return
+        self.root.after(0, lambda status=status, exc=last_error: self.finish_startup_refresh_and_sync(status=status, error=exc))
+
+    def finish_startup_refresh_and_sync(
+        self,
+        status: dict | None = None,
+        sync_payload: dict | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        try:
+            if status is not None:
+                self.apply_status_payload(status)
+            if sync_payload is not None:
+                self.append_log(f"启动自动同步完成。已移动 {sync_payload['updated_rows']} 条线程。")
+                self.append_log(f"已更新 {sync_payload.get('updated_session_meta_entries', 0)} 条 session 元数据。")
+                self.append_log(f"备份文件: {sync_payload['backup_path']}")
+                payload_status = sync_payload.get("status")
+                if isinstance(payload_status, dict):
+                    self.apply_status_payload(payload_status)
+                else:
+                    self.refresh_status()
+            if error is not None:
+                messagebox.showerror("启动自动同步失败", str(error))
+                self.append_log(f"启动自动同步失败: {error}")
+        finally:
+            self.startup_auto_sync_in_progress = False
+            if not self.refresh_in_progress:
+                self.refresh_button.configure(text="刷新状态", state="normal")
+
     def refresh_status(self) -> None:
         if self.refresh_in_progress:
             self.append_log("刷新状态仍在进行中，请稍等。")
@@ -418,7 +525,12 @@ class MacApp:
         self.provider_label.config(text=f"当前 provider: {payload['current_provider']}{source_text}")
         self.model_label.config(text=f"当前模型: {payload.get('current_model') or '未读取到'}")
         self.summary_label.config(
-            text=f"线程总数: {payload['total_threads']}    可同步线程: {payload['movable_threads']}"
+            text=(
+                f"线程总数: {payload['total_threads']}    待处理线程: {payload['movable_threads']}    "
+                f"provider 待同步: {payload.get('provider_movable_threads', 0)}    "
+                f"model 待更新: {payload.get('model_movable_threads', 0) or 0}    "
+                f"session meta 待修复: {payload.get('provider_movable_session_meta_entries', 0)} 条"
+            )
         )
         self.db_label.config(text=f"数据库: {payload['db_path']}")
 
@@ -436,16 +548,16 @@ class MacApp:
             self.backup_list.insert("end", label)
 
         self.append_log(
-            f"状态已刷新。当前 provider={payload['current_provider']}，可同步线程={payload['movable_threads']}。"
+            f"状态已刷新。当前 provider={payload['current_provider']}，待处理线程={payload['movable_threads']}。"
         )
 
     def sync_now(self) -> None:
         self.append_log("开始同步前先刷新状态。")
         if not self.refresh_status_with_result():
             return
-        if self.current_status and int(self.current_status["movable_threads"]) <= 0:
-            messagebox.showinfo("无需同步", "当前已经没有需要迁移到当前 provider 的线程。")
-            self.append_log("同步跳过：没有需要迁移的线程。")
+        if self.current_status and pending_work_count(self.current_status) <= 0:
+            messagebox.showinfo("无需同步", "当前已经没有需要同步或更新的线程。")
+            self.append_log("同步跳过：没有需要同步或更新的线程。")
             return
         if not messagebox.askokcancel("确认同步", "将其他 provider 的线程统一归到当前 provider，且会先自动备份数据库。"):
             self.append_log("用户取消了同步。")
@@ -454,8 +566,9 @@ class MacApp:
 
     def run_sync(self, show_success_message: bool = False) -> bool:
         try:
-            payload = run_backend("sync", codex_home=self.get_codex_home())
+            payload = run_backend("sync", codex_home=self.get_codex_home(), timeout_seconds=120)
             self.append_log(f"同步完成。已移动 {payload['updated_rows']} 条线程。")
+            self.append_log(f"已更新 {payload.get('updated_session_meta_entries', 0)} 条 session 元数据。")
             self.append_log(f"备份文件: {payload['backup_path']}")
             self.refresh_status()
             if show_success_message:
@@ -505,13 +618,13 @@ class MacApp:
             return
 
         self.root.after(0, lambda status=status: self.apply_status_payload(status))
-        movable_threads = int(status.get("movable_threads") or 0)
-        if movable_threads <= 0:
-            self.append_log_from_worker("重启后同步跳过：没有需要迁移的线程。")
+        pending_threads = pending_work_count(status)
+        if pending_threads <= 0:
+            self.append_log_from_worker("重启后同步跳过：没有需要同步或更新的线程。")
             self.show_info_from_worker("无需同步", "Codex 已重启，当前没有需要同步的线程。")
             return
 
-        self.append_log_from_worker(f"重启后发现 {movable_threads} 个可同步线程，正在同步。")
+        self.append_log_from_worker(f"重启后发现 {pending_threads} 个待同步或待更新线程，正在同步。")
         try:
             payload = run_backend("sync", codex_home=self.get_codex_home(), timeout_seconds=120)
         except Exception as exc:
@@ -520,6 +633,7 @@ class MacApp:
             return
 
         self.append_log_from_worker(f"同步完成。已移动 {payload['updated_rows']} 条线程。")
+        self.append_log_from_worker(f"已更新 {payload.get('updated_session_meta_entries', 0)} 条 session 元数据。")
         self.append_log_from_worker(f"备份文件: {payload['backup_path']}")
         self.root.after(0, self.refresh_status)
         self.show_info_from_worker("完成", "Codex 已重启，线程已同步到当前。")

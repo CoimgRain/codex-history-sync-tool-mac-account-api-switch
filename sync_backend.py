@@ -47,6 +47,17 @@ class SessionRecord:
     model: str | None
 
 
+@dataclass
+class SessionMetaStats:
+    provider_counts: OrderedDict[str, int]
+    model_counts: OrderedDict[str, int]
+    mismatched_files: int
+    mismatched_entries: int
+    mismatched_thread_ids: set[str]
+    provider_mismatched_entries: int
+    provider_mismatched_thread_ids: set[str]
+
+
 def resolve_paths(codex_home: str | None) -> Paths:
     home = Path(codex_home).expanduser() if codex_home else default_codex_home()
     return Paths(
@@ -397,6 +408,19 @@ def parse_session_record(path: Path) -> SessionRecord | None:
     return SessionRecord(thread_id=thread_id, path=path, model_provider=model_provider, model=model)
 
 
+def iter_session_meta_items(path: Path) -> Iterator[dict[str, object]]:
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        for line in handle:
+            if '"session_meta"' not in line:
+                continue
+            try:
+                item = json.loads(line.rstrip("\r\n"))
+            except json.JSONDecodeError:
+                continue
+            if item.get("type") == "session_meta" and isinstance(item.get("payload"), dict):
+                yield item
+
+
 def scan_session_records(paths: Paths) -> list[SessionRecord]:
     records: list[SessionRecord] = []
     for path in iter_session_paths(paths):
@@ -404,6 +428,56 @@ def scan_session_records(paths: Paths) -> list[SessionRecord]:
         if record:
             records.append(record)
     return records
+
+
+def scan_session_meta_stats(
+    paths: Paths,
+    current_provider: str | None = None,
+    current_model: str | None = None,
+) -> SessionMetaStats:
+    providers: list[str] = []
+    models: list[str] = []
+    mismatched_files = 0
+    mismatched_entries = 0
+    mismatched_thread_ids: set[str] = set()
+    provider_mismatched_entries = 0
+    provider_mismatched_thread_ids: set[str] = set()
+
+    for path in iter_session_paths(paths):
+        file_mismatched = False
+        for item in iter_session_meta_items(path):
+            payload = item["payload"]
+            assert isinstance(payload, dict)
+            provider = str(payload.get("model_provider") or "")
+            raw_model = payload.get("model")
+            model = str(raw_model) if raw_model else "(empty)"
+            thread_id = str(payload.get("id") or "").strip()
+            providers.append(provider)
+            models.append(model)
+            if current_provider is not None and provider != current_provider:
+                mismatched_entries += 1
+                provider_mismatched_entries += 1
+                if thread_id:
+                    mismatched_thread_ids.add(thread_id)
+                    provider_mismatched_thread_ids.add(thread_id)
+                file_mismatched = True
+            elif current_model is not None and model != current_model:
+                mismatched_entries += 1
+                if thread_id:
+                    mismatched_thread_ids.add(thread_id)
+                file_mismatched = True
+        if file_mismatched:
+            mismatched_files += 1
+
+    return SessionMetaStats(
+        provider_counts=ordered_counts(providers),
+        model_counts=ordered_counts(models),
+        mismatched_files=mismatched_files,
+        mismatched_entries=mismatched_entries,
+        mismatched_thread_ids=mismatched_thread_ids,
+        provider_mismatched_entries=provider_mismatched_entries,
+        provider_mismatched_thread_ids=provider_mismatched_thread_ids,
+    )
 
 
 def read_session_index(paths: Paths) -> OrderedDict[str, dict[str, str]]:
@@ -454,17 +528,26 @@ def snapshot_metadata(paths: Paths, backup_path: Path) -> None:
 
     items: list[dict[str, str]] = []
     for path in iter_session_paths(paths):
-        with path.open("r", encoding="utf-8", newline="") as handle:
-            first_line = handle.readline().rstrip("\r\n")
-        if not first_line:
-            continue
-
         try:
             relative_path = path.relative_to(paths.codex_home)
         except ValueError:
             relative_path = path
 
-        items.append({"path": str(relative_path), "first_line": first_line})
+        meta_lines: list[dict[str, object]] = []
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                line_body = line.rstrip("\r\n")
+                if '"session_meta"' not in line_body:
+                    continue
+                try:
+                    item = json.loads(line_body)
+                except json.JSONDecodeError:
+                    continue
+                if item.get("type") == "session_meta":
+                    meta_lines.append({"line_number": line_number, "line": line_body})
+
+        if meta_lines:
+            items.append({"path": str(relative_path), "meta_lines": meta_lines})
 
     write_text_exact(
         session_meta_backup_path(backup_path),
@@ -489,8 +572,22 @@ def restore_metadata(paths: Paths, backup_path: Path) -> dict[str, object]:
             path = raw_path if raw_path.is_absolute() else paths.codex_home / raw_path
             if not path.exists():
                 continue
-            # 只恢复首行 session_meta，后面的对话内容保持原文件不动。
-            replace_first_line(path, str(item["first_line"]))
+            if "meta_lines" not in item:
+                # 兼容旧备份格式：旧版只保存首行 session_meta。
+                replace_first_line(path, str(item["first_line"]))
+                session_files_restored += 1
+                continue
+
+            lines = read_text_exact(path).splitlines(keepends=True)
+            for meta_item in item["meta_lines"]:
+                line_number = int(meta_item["line_number"])
+                if line_number <= 0 or line_number > len(lines):
+                    continue
+                existing = lines[line_number - 1]
+                existing_body = existing.rstrip("\r\n")
+                existing_ending = existing[len(existing_body) :]
+                lines[line_number - 1] = str(meta_item["line"]) + existing_ending
+            write_text_exact(path, "".join(lines))
             session_files_restored += 1
 
     return {
@@ -553,34 +650,56 @@ def rebuild_session_index(paths: Paths, conn: sqlite3.Connection) -> dict[str, i
 def sync_session_records(paths: Paths, current_provider: str, current_model: str | None) -> dict[str, object]:
     started_at = time.monotonic()
     before_records = scan_session_records(paths)
+    before_meta_stats = scan_session_meta_stats(paths, current_provider, current_model)
     updated_session_files = 0
+    updated_session_meta_entries = 0
 
-    for record in before_records:
-        model_matches = current_model is None or record.model == current_model
-        if record.model_provider == current_provider and model_matches:
-            continue
+    for path in iter_session_paths(paths):
+        text = read_text_exact(path)
+        lines = text.splitlines(keepends=True)
+        changed = False
+        new_lines: list[str] = []
 
-        text = read_text_exact(record.path)
-        first_line, ending, remainder = split_first_line(text)
-        item = json.loads(first_line)
-        payload = item.get("payload")
-        if not isinstance(payload, dict):
-            continue
+        for line in lines:
+            line_body = line.rstrip("\r\n")
+            line_ending = line[len(line_body) :]
+            if '"session_meta"' not in line_body:
+                new_lines.append(line)
+                continue
+            try:
+                item = json.loads(line_body)
+            except json.JSONDecodeError:
+                new_lines.append(line)
+                continue
+            if item.get("type") != "session_meta":
+                new_lines.append(line)
+                continue
+            payload = item.get("payload")
+            if not isinstance(payload, dict):
+                new_lines.append(line)
+                continue
 
-        payload["model_provider"] = current_provider
-        if current_model:
-            payload["model"] = current_model
-        new_first_line = json.dumps(item, ensure_ascii=False, separators=(",", ":"))
-        if ending:
-            new_text = new_first_line + ending + remainder
-        else:
-            new_text = new_first_line
-        write_text_exact(record.path, new_text)
-        updated_session_files += 1
+            model_matches = current_model is None or payload.get("model") == current_model
+            if payload.get("model_provider") == current_provider and model_matches:
+                new_lines.append(line)
+                continue
+
+            payload["model_provider"] = current_provider
+            if current_model:
+                payload["model"] = current_model
+            new_lines.append(json.dumps(item, ensure_ascii=False, separators=(",", ":")) + line_ending)
+            changed = True
+            updated_session_meta_entries += 1
+
+        if changed:
+            write_text_exact(path, "".join(new_lines))
+            updated_session_files += 1
 
     after_records = scan_session_records(paths)
+    after_meta_stats = scan_session_meta_stats(paths, current_provider, current_model)
     return {
         "updated_session_files": updated_session_files,
+        "updated_session_meta_entries": updated_session_meta_entries,
         "session_before_counts": counts_to_rows(
             ordered_counts([record.model_provider for record in before_records])
         ),
@@ -593,6 +712,14 @@ def sync_session_records(paths: Paths, current_provider: str, current_model: str
         "session_after_model_counts": model_counts_to_rows(
             ordered_counts([record.model or "(empty)" for record in after_records])
         ),
+        "all_session_meta_before_counts": counts_to_rows(before_meta_stats.provider_counts),
+        "all_session_meta_after_counts": counts_to_rows(after_meta_stats.provider_counts),
+        "all_session_meta_before_model_counts": model_counts_to_rows(before_meta_stats.model_counts),
+        "all_session_meta_after_model_counts": model_counts_to_rows(after_meta_stats.model_counts),
+        "mismatched_session_meta_files_before": before_meta_stats.mismatched_files,
+        "mismatched_session_meta_files_after": after_meta_stats.mismatched_files,
+        "mismatched_session_meta_entries_before": before_meta_stats.mismatched_entries,
+        "mismatched_session_meta_entries_after": after_meta_stats.mismatched_entries,
         "duration_ms": elapsed_ms(started_at),
     }
 
@@ -744,11 +871,11 @@ def get_status(paths: Paths) -> dict[str, object]:
         current_provider, current_provider_source = resolve_current_provider(paths, config_text, conn, current_model)
         session_provider_counts = ordered_counts([record.model_provider for record in session_records])
         session_model_counts = ordered_counts([record.model or "(empty)" for record in session_records])
+        session_meta_stats = scan_session_meta_stats(paths, current_provider, current_model)
         session_movable_ids = {
             record.thread_id
             for record in session_records
             if record.model_provider != current_provider
-            or (current_model is not None and record.model != current_model)
         }
         model_counts = query_model_counts(conn) if "model" in columns else OrderedDict()
         provider_model_counts = query_provider_model_counts(conn) if "model" in columns else []
@@ -758,15 +885,13 @@ def get_status(paths: Paths) -> dict[str, object]:
         model_movable = count_mismatched(conn, "model", current_model) if "model" in columns else None
         where_parts = ["model_provider IS NULL OR model_provider <> ?"]
         params: list[str] = [current_provider]
-        if "model" in columns and current_model:
-            where_parts.append("model IS NULL OR model <> ?")
-            params.append(current_model)
         where_sql = " OR ".join(f"({part})" for part in where_parts)
         db_movable_ids = {str(row["id"]) for row in conn.execute(f"SELECT id FROM threads WHERE {where_sql}", params)}
         db_thread_query = "SELECT id FROM threads WHERE archived = 0" if "archived" in columns else "SELECT id FROM threads"
         db_thread_ids = {str(row["id"]) for row in conn.execute(db_thread_query)}
         missing_index_ids = db_thread_ids - set(index_entries) if should_check_index else set()
-        sync_candidate_ids = db_movable_ids | session_movable_ids | missing_index_ids
+        db_pending_ids = db_movable_ids | missing_index_ids
+        session_pending_ids = session_movable_ids | session_meta_stats.provider_mismatched_thread_ids
 
     return {
         "codex_home": str(paths.codex_home),
@@ -779,11 +904,16 @@ def get_status(paths: Paths) -> dict[str, object]:
         "current_provider_source": current_provider_source,
         "current_model": current_model,
         "total_threads": total_threads,
-        "movable_threads": len(sync_candidate_ids),
+        "movable_threads": len(db_pending_ids),
         "provider_movable_threads": provider_movable,
         "model_movable_threads": model_movable,
         "movable_database_threads": len(db_movable_ids),
+        "movable_database_thread_ids": sorted(db_pending_ids),
         "movable_session_threads": len(session_movable_ids),
+        "movable_session_thread_ids": sorted(session_pending_ids),
+        "movable_session_meta_entries": session_meta_stats.mismatched_entries,
+        "movable_session_meta_files": session_meta_stats.mismatched_files,
+        "provider_movable_session_meta_entries": session_meta_stats.provider_mismatched_entries,
         "missing_session_index_entries": len(missing_index_ids),
         "indexed_threads": len(index_entries),
         "session_file_count": len(session_records),
@@ -793,6 +923,8 @@ def get_status(paths: Paths) -> dict[str, object]:
         "cwd_counts": cwd_counts,
         "session_provider_counts": counts_to_rows(session_provider_counts),
         "session_model_counts": model_counts_to_rows(session_model_counts),
+        "all_session_meta_provider_counts": counts_to_rows(session_meta_stats.provider_counts),
+        "all_session_meta_model_counts": model_counts_to_rows(session_meta_stats.model_counts),
         "backups": list_backups(paths),
     }
 
@@ -834,6 +966,7 @@ def sync_to_current_provider(paths: Paths) -> dict[str, object]:
         "synced_fields": db_summary["synced_fields"],
         "updated_rows": db_summary["updated_rows"],
         "updated_session_files": session_summary["updated_session_files"],
+        "updated_session_meta_entries": session_summary["updated_session_meta_entries"],
         "provider_movable_threads": status_before["provider_movable_threads"],
         "model_movable_threads": status_before["model_movable_threads"],
         "backup_path": str(backup_path),
@@ -845,6 +978,14 @@ def sync_to_current_provider(paths: Paths) -> dict[str, object]:
         "session_after_counts": session_summary["session_after_counts"],
         "session_before_model_counts": session_summary["session_before_model_counts"],
         "session_after_model_counts": session_summary["session_after_model_counts"],
+        "all_session_meta_before_counts": session_summary["all_session_meta_before_counts"],
+        "all_session_meta_after_counts": session_summary["all_session_meta_after_counts"],
+        "all_session_meta_before_model_counts": session_summary["all_session_meta_before_model_counts"],
+        "all_session_meta_after_model_counts": session_summary["all_session_meta_after_model_counts"],
+        "mismatched_session_meta_files_before": session_summary["mismatched_session_meta_files_before"],
+        "mismatched_session_meta_files_after": session_summary["mismatched_session_meta_files_after"],
+        "mismatched_session_meta_entries_before": session_summary["mismatched_session_meta_entries_before"],
+        "mismatched_session_meta_entries_after": session_summary["mismatched_session_meta_entries_after"],
         "checkpoint": db_summary["checkpoint"],
         "lock_wait_ms": db_summary["lock_wait_ms"],
         "lock_attempts": db_summary["attempts"],
