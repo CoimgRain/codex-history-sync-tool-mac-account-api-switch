@@ -13,13 +13,14 @@
 - 支持勾选“打开 Codex Desktop 时自动刷新并同步到当前”：开启后会安装本机 LaunchAgent，在 Codex Desktop 启动时自动刷新状态，并在存在可同步线程时自动同步。
 - 提供高级功能“重启 Codex 并同步线程”：适合 CC Switch 或登录方式切换后使用，会自动重启 Codex、刷新状态并同步线程；不建议日常用户频繁使用。
 - 高级重启同步按钮已改为后台执行，避免 Codex 关闭或重开过程导致工具窗口卡死。
+- 刷新状态改为后台执行并显示进度；重启同步和自动同步增加超时保护，避免 Codex 刚启动时看起来没有反应。
 - macOS `.app` 界面增加说明文字，直接双击即可使用。
 
 ## 直接下载使用
 
 推荐下载发布包里的：
 
-- `Codex-History-Sync-Tool-v1.4.1.dmg`
+- `Codex-History-Sync-Tool-v1.4.2.dmg`
 
 下载后打开 DMG，把 `Codex History Sync Tool.app` 拖到 `Applications`，再双击打开。
 
@@ -65,7 +66,7 @@
 下载并解压：
 
 ```text
-Codex-History-Sync-Tool-v1.4.1.dmg
+Codex-History-Sync-Tool-v1.4.2.dmg
 ```
 
 打开 DMG 后把 app 拖到 Applications，然后双击：

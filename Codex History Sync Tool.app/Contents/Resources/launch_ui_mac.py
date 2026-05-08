@@ -27,12 +27,16 @@ CODEX_RESTART_WAIT_SECONDS = 20
 CODEX_QUIT_WAIT_SECONDS = 12
 
 
-def run_backend(*args: str, codex_home: str | None = None) -> dict:
+def run_backend(*args: str, codex_home: str | None = None, timeout_seconds: int | None = None) -> dict:
     cmd = [sys.executable, str(BACKEND_PATH), "--json"]
     if codex_home:
         cmd.extend(["--codex-home", codex_home])
     cmd.extend(args)
-    completed = subprocess.run(cmd, capture_output=True, text=True)
+    try:
+        completed = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_seconds)
+    except subprocess.TimeoutExpired as exc:
+        seconds = timeout_seconds if timeout_seconds is not None else "unknown"
+        raise RuntimeError(f"后端执行超过 {seconds} 秒仍未返回，请稍后再试。") from exc
     text = (completed.stdout or completed.stderr).strip()
     if not text:
         raise RuntimeError("后端没有返回任何内容。")
@@ -214,10 +218,11 @@ class MacApp:
         )
         self.current_status: dict | None = None
         self.backup_map: dict[str, str] = {}
+        self.refresh_in_progress = False
 
         self._build_ui()
-        self.refresh_status()
-        self.root.after(500, self.ensure_autosync_agent_if_enabled)
+        self.root.after(100, self.refresh_status)
+        self.root.after(800, self.ensure_autosync_agent_if_enabled)
 
     def _build_ui(self) -> None:
         frame = ttk.Frame(self.root, padding=16)
@@ -240,7 +245,8 @@ class MacApp:
         path_row.pack(fill="x", pady=(0, 10))
         ttk.Label(path_row, text="Codex Home:").pack(side="left")
         ttk.Entry(path_row, textvariable=self.codex_home_var).pack(side="left", fill="x", expand=True, padx=(8, 8))
-        ttk.Button(path_row, text="刷新状态", command=self.refresh_status).pack(side="left")
+        self.refresh_button = ttk.Button(path_row, text="刷新状态", command=self.refresh_status)
+        self.refresh_button.pack(side="left")
 
         auto_row = ttk.Frame(frame)
         auto_row.pack(fill="x", pady=(0, 10))
@@ -365,18 +371,38 @@ class MacApp:
             self.append_log(f"后台自动同步监听启动失败: {exc}")
 
     def refresh_status(self) -> None:
+        if self.refresh_in_progress:
+            self.append_log("刷新状态仍在进行中，请稍等。")
+            return
+        self.refresh_in_progress = True
+        self.refresh_button.configure(text="正在刷新...", state="disabled")
+        self.append_log("正在刷新状态。")
+        threading.Thread(target=self.refresh_status_worker, daemon=True).start()
+
+    def refresh_status_worker(self) -> None:
         try:
-            payload = run_backend("status", codex_home=self.get_codex_home())
+            payload = run_backend("status", codex_home=self.get_codex_home(), timeout_seconds=30)
         except Exception as exc:
-            messagebox.showerror("刷新失败", str(exc))
-            self.append_log(f"刷新失败: {exc}")
+            self.root.after(0, lambda exc=exc: self.finish_refresh_status(error=exc))
             return
 
-        self.apply_status_payload(payload)
+        self.root.after(0, lambda payload=payload: self.finish_refresh_status(payload=payload))
+
+    def finish_refresh_status(self, payload: dict | None = None, error: Exception | None = None) -> None:
+        try:
+            if error is not None:
+                messagebox.showerror("刷新失败", str(error))
+                self.append_log(f"刷新失败: {error}")
+                return
+            if payload is not None:
+                self.apply_status_payload(payload)
+        finally:
+            self.refresh_in_progress = False
+            self.refresh_button.configure(text="刷新状态", state="normal")
 
     def refresh_status_with_result(self) -> bool:
         try:
-            payload = run_backend("status", codex_home=self.get_codex_home())
+            payload = run_backend("status", codex_home=self.get_codex_home(), timeout_seconds=30)
         except Exception as exc:
             messagebox.showerror("刷新失败", str(exc))
             self.append_log(f"刷新失败: {exc}")
@@ -472,7 +498,7 @@ class MacApp:
             self.append_log_from_worker("未在预期时间内检测到 Codex 后台服务，仍继续刷新状态。")
 
         try:
-            status = run_backend("status", codex_home=self.get_codex_home())
+            status = run_backend("status", codex_home=self.get_codex_home(), timeout_seconds=30)
         except Exception as exc:
             self.show_error_from_worker("刷新失败", str(exc))
             self.append_log_from_worker(f"重启后同步跳过：无法读取当前状态。{exc}")
@@ -487,7 +513,7 @@ class MacApp:
 
         self.append_log_from_worker(f"重启后发现 {movable_threads} 个可同步线程，正在同步。")
         try:
-            payload = run_backend("sync", codex_home=self.get_codex_home())
+            payload = run_backend("sync", codex_home=self.get_codex_home(), timeout_seconds=120)
         except Exception as exc:
             self.show_error_from_worker("同步失败", str(exc))
             self.append_log_from_worker(f"同步失败: {exc}")

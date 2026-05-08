@@ -58,12 +58,21 @@ def codex_desktop_pids() -> set[int]:
     return pids
 
 
-def run_backend(backend: Path, command: str, codex_home: str | None) -> dict[str, object]:
+def run_backend(
+    backend: Path,
+    command: str,
+    codex_home: str | None,
+    timeout_seconds: int | None = None,
+) -> dict[str, object]:
     cmd = [sys.executable, str(backend), "--json"]
     if codex_home:
         cmd.extend(["--codex-home", codex_home])
     cmd.append(command)
-    completed = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    try:
+        completed = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=timeout_seconds)
+    except subprocess.TimeoutExpired as exc:
+        seconds = timeout_seconds if timeout_seconds is not None else "unknown"
+        raise RuntimeError(f"backend timed out after {seconds} seconds") from exc
     text = (completed.stdout or completed.stderr).strip()
     if not text:
         raise RuntimeError("backend returned no output")
@@ -79,7 +88,7 @@ def sync_if_needed(
     log_path: Path | None,
     settings_path: Path | None,
 ) -> None:
-    status = run_backend(backend, "status", codex_home)
+    status = run_backend(backend, "status", codex_home, timeout_seconds=30)
     movable_threads = int(status.get("movable_threads") or 0)
     current_provider = str(status.get("current_provider") or "").strip()
     append_log(log_path, f"Codex opened: provider={current_provider}, movable_threads={movable_threads}")
@@ -95,7 +104,7 @@ def sync_if_needed(
         append_log(log_path, "Auto sync skipped: no movable threads")
         return
 
-    payload = run_backend(backend, "sync", codex_home)
+    payload = run_backend(backend, "sync", codex_home, timeout_seconds=120)
     settings["last_provider"] = current_provider
     settings["last_provider_seen_at"] = datetime.now().isoformat(timespec="seconds")
     settings["last_sync_at"] = datetime.now().isoformat(timespec="seconds")
