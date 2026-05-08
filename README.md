@@ -20,7 +20,7 @@
 
 推荐下载发布包里的：
 
-- `Codex-History-Sync-Tool-v1.4.2.dmg`
+- `Codex-History-Sync-Tool-v1.5.dmg`
 
 下载后打开 DMG，把 `Codex History Sync Tool.app` 拖到 `Applications`，再双击打开。
 
@@ -66,7 +66,7 @@
 下载并解压：
 
 ```text
-Codex-History-Sync-Tool-v1.4.2.dmg
+Codex-History-Sync-Tool-v1.5.dmg
 ```
 
 打开 DMG 后把 app 拖到 Applications，然后双击：
