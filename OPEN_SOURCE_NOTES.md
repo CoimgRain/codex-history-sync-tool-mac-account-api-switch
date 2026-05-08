@@ -17,6 +17,7 @@ This repository is a macOS-focused derivative of two public MIT-licensed project
 - Kept API-login behavior intact by continuing to prefer `config.toml` when `model_provider` is present.
 - Added fallback provider inference from recent local threads.
 - Updated the macOS GUI copy to state that both OpenAI/Plus account login and API login are supported.
+- Added an optional macOS LaunchAgent watcher that can trigger sync when Codex Desktop opens.
 - Synced the fixed backend and GUI scripts into the bundled `Codex History Sync Tool.app`.
 
 ## Privacy note
@@ -32,5 +33,6 @@ Do not commit local Codex data, including:
 - `~/.codex/config.toml`
 - `~/.codex/history_sync_backups`
 - screenshots, logs, or exports containing user-specific paths or thread content
+- generated local LaunchAgent plists or watcher logs
 
 Before publishing, run a repository-wide scan for personal paths, tokens, API keys, and local database names.

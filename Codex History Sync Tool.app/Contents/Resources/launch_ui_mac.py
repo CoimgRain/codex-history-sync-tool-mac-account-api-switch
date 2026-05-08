@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import plistlib
 import subprocess
 import sys
 import tkinter as tk
@@ -12,6 +13,11 @@ from tkinter import messagebox, ttk
 
 TOOL_ROOT = Path(__file__).resolve().parent
 BACKEND_PATH = TOOL_ROOT / "sync_backend.py"
+WATCHER_PATH = TOOL_ROOT / "auto_sync_watcher.py"
+SETTINGS_PATH = Path.home() / "Library" / "Application Support" / "Codex History Sync Tool" / "settings.json"
+AUTOSYNC_LABEL = "com.panrui.codex-history-sync-tool.autosync"
+AUTOSYNC_PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / f"{AUTOSYNC_LABEL}.plist"
+AUTOSYNC_LOG_PATH = SETTINGS_PATH.parent / "autosync.log"
 
 
 def run_backend(*args: str, codex_home: str | None = None) -> dict:
@@ -32,6 +38,65 @@ def run_backend(*args: str, codex_home: str | None = None) -> dict:
     return payload
 
 
+def load_settings() -> dict[str, object]:
+    if not SETTINGS_PATH.exists():
+        return {}
+    try:
+        payload = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def save_settings(settings: dict[str, object]) -> None:
+    SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    SETTINGS_PATH.write_text(json.dumps(settings, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def run_launchctl(*args: str, check: bool = False) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["launchctl", *args], capture_output=True, text=True, check=check)
+
+
+def unload_autosync_agent() -> None:
+    run_launchctl("bootout", f"gui/{os.getuid()}", str(AUTOSYNC_PLIST_PATH), check=False)
+
+
+def install_autosync_agent(codex_home: str) -> None:
+    if not WATCHER_PATH.exists():
+        raise RuntimeError(f"找不到后台监听脚本: {WATCHER_PATH}")
+
+    SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    AUTOSYNC_PLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
+    plist = {
+        "Label": AUTOSYNC_LABEL,
+        "ProgramArguments": [
+            sys.executable,
+            str(WATCHER_PATH),
+            "--backend",
+            str(BACKEND_PATH),
+            "--codex-home",
+            codex_home,
+            "--log",
+            str(AUTOSYNC_LOG_PATH),
+        ],
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "StandardOutPath": str(AUTOSYNC_LOG_PATH),
+        "StandardErrorPath": str(AUTOSYNC_LOG_PATH),
+    }
+    with AUTOSYNC_PLIST_PATH.open("wb") as handle:
+        plistlib.dump(plist, handle)
+
+    unload_autosync_agent()
+    run_launchctl("bootstrap", f"gui/{os.getuid()}", str(AUTOSYNC_PLIST_PATH), check=True)
+
+
+def uninstall_autosync_agent() -> None:
+    unload_autosync_agent()
+    if AUTOSYNC_PLIST_PATH.exists():
+        AUTOSYNC_PLIST_PATH.unlink()
+
+
 class MacApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -39,12 +104,20 @@ class MacApp:
         self.root.geometry("900x680")
         self.root.minsize(900, 680)
 
+        self.settings = load_settings()
         self.codex_home_var = tk.StringVar(value=str(Path.home() / ".codex"))
+        self.auto_sync_on_launch_var = tk.BooleanVar(
+            value=bool(
+                self.settings.get("auto_sync_when_codex_opens")
+                or self.settings.get("auto_sync_on_launch")
+            )
+        )
         self.current_status: dict | None = None
         self.backup_map: dict[str, str] = {}
 
         self._build_ui()
         self.refresh_status()
+        self.root.after(500, self.ensure_autosync_agent_if_enabled)
 
     def _build_ui(self) -> None:
         frame = ttk.Frame(self.root, padding=16)
@@ -68,6 +141,15 @@ class MacApp:
         ttk.Label(path_row, text="Codex Home:").pack(side="left")
         ttk.Entry(path_row, textvariable=self.codex_home_var).pack(side="left", fill="x", expand=True, padx=(8, 8))
         ttk.Button(path_row, text="刷新状态", command=self.refresh_status).pack(side="left")
+
+        auto_row = ttk.Frame(frame)
+        auto_row.pack(fill="x", pady=(0, 10))
+        ttk.Checkbutton(
+            auto_row,
+            text="打开 Codex Desktop 时自动刷新并同步到当前",
+            variable=self.auto_sync_on_launch_var,
+            command=self.save_auto_sync_setting,
+        ).pack(anchor="w")
 
         self.provider_label = ttk.Label(frame, text="当前 provider:")
         self.provider_label.pack(anchor="w")
@@ -128,6 +210,32 @@ class MacApp:
     def get_codex_home(self) -> str:
         return self.codex_home_var.get().strip()
 
+    def save_auto_sync_setting(self) -> None:
+        enabled = bool(self.auto_sync_on_launch_var.get())
+        self.settings["auto_sync_when_codex_opens"] = enabled
+        self.settings.pop("auto_sync_on_launch", None)
+        self.settings["codex_home"] = self.get_codex_home()
+        try:
+            save_settings(self.settings)
+            if enabled:
+                install_autosync_agent(self.get_codex_home())
+            else:
+                uninstall_autosync_agent()
+        except Exception as exc:
+            messagebox.showerror("保存设置失败", str(exc))
+            self.append_log(f"保存设置失败: {exc}")
+            return
+        state = "开启" if enabled else "关闭"
+        self.append_log(f"Codex 打开时自动同步已{state}。")
+
+    def ensure_autosync_agent_if_enabled(self) -> None:
+        if not self.auto_sync_on_launch_var.get():
+            return
+        try:
+            install_autosync_agent(self.get_codex_home())
+        except Exception as exc:
+            self.append_log(f"后台自动同步监听启动失败: {exc}")
+
     def refresh_status(self) -> None:
         try:
             payload = run_backend("status", codex_home=self.get_codex_home())
@@ -173,15 +281,21 @@ class MacApp:
         if not messagebox.askokcancel("确认同步", "将其他 provider 的线程统一归到当前 provider，且会先自动备份数据库。"):
             self.append_log("用户取消了同步。")
             return
+        self.run_sync(show_success_message=True)
+
+    def run_sync(self, show_success_message: bool = False) -> bool:
         try:
             payload = run_backend("sync", codex_home=self.get_codex_home())
             self.append_log(f"同步完成。已移动 {payload['updated_rows']} 条线程。")
             self.append_log(f"备份文件: {payload['backup_path']}")
             self.refresh_status()
-            messagebox.showinfo("同步完成", "同步完成。若历史列表没有立刻刷新，重开一次 Codex 即可。")
+            if show_success_message:
+                messagebox.showinfo("同步完成", "同步完成。若历史列表没有立刻刷新，重开一次 Codex 即可。")
+            return True
         except Exception as exc:
             messagebox.showerror("同步失败", str(exc))
             self.append_log(f"同步失败: {exc}")
+            return False
 
     def manual_backup(self) -> None:
         try:

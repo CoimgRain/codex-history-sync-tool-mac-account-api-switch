@@ -9,6 +9,7 @@
 - 支持 OpenAI/Plus 账号登录：当 `config.toml` 没有 `model_provider` 时，会从 `auth.json` 和最近线程推断当前 provider。
 - 支持 API 登录：如果 `config.toml` 写了 `model_provider`，仍优先使用配置里的当前 provider。
 - 支持账号登录与 API 登录之间来回切换后刷新状态、一键同步历史。
+- 支持勾选“打开 Codex Desktop 时自动刷新并同步到当前”：开启后会安装本机 LaunchAgent，在 Codex Desktop 启动时自动同步。
 - macOS `.app` 界面增加说明文字，直接双击即可使用。
 
 ## 直接下载使用
@@ -29,6 +30,7 @@
 - 在同步前自动备份数据库、侧边栏索引和会话元数据
 - 从备份恢复数据库
 - 提供可直接双击运行的 macOS app bundle
+- 可选后台监听 Codex Desktop 启动，并在启动时自动刷新状态、自动同步
 
 ## 适用场景
 
@@ -116,12 +118,14 @@ python3 ./sync_backend.py --json restore
 - 同步前建议先关闭或暂停 Codex Desktop 正在运行的任务
 - 如果 Codex Desktop 正在写入数据库，工具会等待数据库空闲后继续
 - 如果同步完成后历史列表没有立刻刷新，重开一次 Codex Desktop
+- 自动同步开关会在本机 `~/Library/LaunchAgents` 下安装或移除 LaunchAgent；它只监听本机 Codex Desktop 是否启动，并调用本工具后端，不会上传任何数据
 - 这个工具只修复本机可见性和 provider/model 归属，不会上传、同步或读取云端聊天记录
 
 ## 项目文件
 
 - `sync_backend.py`：后端同步、备份、恢复逻辑
 - `launch_ui_mac.py`：macOS 图形界面
+- `auto_sync_watcher.py`：监听 Codex Desktop 启动并触发自动同步的后台脚本
 - `launch_ui_mac.command`：macOS 双击命令入口
 - `Codex History Sync Tool.app`：macOS app bundle
 - `launch_ui.ps1`：上游 Windows 图形界面入口
