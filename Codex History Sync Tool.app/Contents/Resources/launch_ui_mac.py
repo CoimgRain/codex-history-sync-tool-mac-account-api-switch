@@ -6,7 +6,10 @@ import os
 import plistlib
 import subprocess
 import sys
+import threading
+import time
 import tkinter as tk
+from datetime import datetime
 from pathlib import Path
 from tkinter import messagebox, ttk
 
@@ -18,6 +21,10 @@ SETTINGS_PATH = Path.home() / "Library" / "Application Support" / "Codex History
 AUTOSYNC_LABEL = "com.panrui.codex-history-sync-tool.autosync"
 AUTOSYNC_PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / f"{AUTOSYNC_LABEL}.plist"
 AUTOSYNC_LOG_PATH = SETTINGS_PATH.parent / "autosync.log"
+CODEX_BUNDLE_ID = "com.openai.codex"
+CODEX_APP_PATH = "/Applications/Codex.app"
+CODEX_RESTART_WAIT_SECONDS = 20
+CODEX_QUIT_WAIT_SECONDS = 12
 
 
 def run_backend(*args: str, codex_home: str | None = None) -> dict:
@@ -76,6 +83,8 @@ def install_autosync_agent(codex_home: str) -> None:
             str(BACKEND_PATH),
             "--codex-home",
             codex_home,
+            "--settings",
+            str(SETTINGS_PATH),
             "--log",
             str(AUTOSYNC_LOG_PATH),
         ],
@@ -95,6 +104,97 @@ def uninstall_autosync_agent() -> None:
     unload_autosync_agent()
     if AUTOSYNC_PLIST_PATH.exists():
         AUTOSYNC_PLIST_PATH.unlink()
+
+
+def is_codex_desktop_running() -> bool:
+    completed = subprocess.run(
+        ["pgrep", "-f", r"/Applications/Codex\.app/Contents/MacOS/Codex"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return completed.returncode == 0
+
+
+def restart_codex_desktop() -> str:
+    script = r'''
+on clickQuitConfirmation()
+  set buttonNames to {"退出", "确认退出", "Quit", "OK", "确定", "继续退出"}
+  repeat 25 times
+    tell application "System Events"
+      if exists process "Codex" then
+        tell process "Codex"
+          set frontmost to true
+          repeat with buttonName in buttonNames
+            try
+              if exists button buttonName of window 1 then
+                click button buttonName of window 1
+                return "clicked"
+              end if
+            end try
+            try
+              if exists sheet 1 of window 1 then
+                if exists button buttonName of sheet 1 of window 1 then
+                  click button buttonName of sheet 1 of window 1
+                  return "clicked"
+                end if
+              end if
+            end try
+          end repeat
+        end tell
+      end if
+    end tell
+    delay 0.2
+  end repeat
+  return "not_found"
+end clickQuitConfirmation
+
+tell application id "com.openai.codex" to quit
+return clickQuitConfirmation()
+'''
+    completed = subprocess.run(
+        ["osascript", "-e", script],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=8,
+    )
+    output = (completed.stdout or completed.stderr).strip()
+    if completed.returncode != 0:
+        raise RuntimeError(output or "无法通过 AppleScript 重启 Codex。")
+
+    deadline = time.monotonic() + CODEX_QUIT_WAIT_SECONDS
+    while time.monotonic() < deadline and is_codex_desktop_running():
+        time.sleep(0.25)
+
+    if is_codex_desktop_running():
+        raise RuntimeError("Codex 已收到退出请求，但在限定时间内没有完全退出。请手动确认退出弹窗后再试。")
+
+    open_result = subprocess.run(
+        ["/usr/bin/open", "-a", CODEX_APP_PATH],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if open_result.returncode != 0:
+        raise RuntimeError((open_result.stderr or open_result.stdout).strip() or f"无法打开 {CODEX_APP_PATH}。")
+
+    return f"restarted:{output or 'quit_requested'}"
+
+
+def wait_for_codex_backend(timeout_seconds: int = CODEX_RESTART_WAIT_SECONDS) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        completed = subprocess.run(
+            ["pgrep", "-f", "Codex.app/Contents/Resources/codex app-server"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if completed.returncode == 0:
+            return True
+        time.sleep(0.5)
+    return False
 
 
 class MacApp:
@@ -163,9 +263,22 @@ class MacApp:
         button_row = ttk.Frame(frame)
         button_row.pack(fill="x", pady=(0, 12))
         ttk.Button(button_row, text="一键同步到当前", command=self.sync_now).pack(side="left")
+        ttk.Button(button_row, text="高级: 重启 Codex 并同步线程", command=self.restart_codex_and_sync).pack(side="left", padx=(8, 0))
         ttk.Button(button_row, text="手动备份", command=self.manual_backup).pack(side="left", padx=(8, 0))
         ttk.Button(button_row, text="恢复最新备份", command=self.restore_latest).pack(side="left", padx=(8, 0))
         ttk.Button(button_row, text="打开备份目录", command=self.open_backup_dir).pack(side="left", padx=(8, 0))
+
+        cc_switch_note = ttk.Label(
+            frame,
+            text=(
+                "高级功能：不建议普通用户日常使用。\n"
+                "使用前请先取消勾选“打开 Codex Desktop 时自动刷新并同步到当前”。\n"
+                "CC Switch 切换后可用“高级: 重启 Codex 并同步线程”，工具会自动重启 Codex、刷新状态并同步线程。"
+            ),
+            justify="left",
+            wraplength=820,
+        )
+        cc_switch_note.pack(anchor="w", pady=(0, 12))
 
         panes = ttk.Frame(frame)
         panes.pack(fill="both", expand=True)
@@ -207,6 +320,15 @@ class MacApp:
         self.log.see("end")
         self.log.configure(state="disabled")
 
+    def append_log_from_worker(self, text: str) -> None:
+        self.root.after(0, lambda: self.append_log(text))
+
+    def show_info_from_worker(self, title: str, message: str) -> None:
+        self.root.after(0, lambda: messagebox.showinfo(title, message))
+
+    def show_error_from_worker(self, title: str, message: str) -> None:
+        self.root.after(0, lambda: messagebox.showerror(title, message))
+
     def get_codex_home(self) -> str:
         return self.codex_home_var.get().strip()
 
@@ -215,6 +337,12 @@ class MacApp:
         self.settings["auto_sync_when_codex_opens"] = enabled
         self.settings.pop("auto_sync_on_launch", None)
         self.settings["codex_home"] = self.get_codex_home()
+        if enabled:
+            if not self.current_status:
+                self.refresh_status()
+            if self.current_status and self.current_status.get("current_provider"):
+                self.settings["last_provider"] = str(self.current_status["current_provider"])
+                self.settings["last_provider_seen_at"] = datetime.now().isoformat(timespec="seconds")
         try:
             save_settings(self.settings)
             if enabled:
@@ -244,6 +372,20 @@ class MacApp:
             self.append_log(f"刷新失败: {exc}")
             return
 
+        self.apply_status_payload(payload)
+
+    def refresh_status_with_result(self) -> bool:
+        try:
+            payload = run_backend("status", codex_home=self.get_codex_home())
+        except Exception as exc:
+            messagebox.showerror("刷新失败", str(exc))
+            self.append_log(f"刷新失败: {exc}")
+            return False
+
+        self.apply_status_payload(payload)
+        return True
+
+    def apply_status_payload(self, payload: dict) -> None:
         self.current_status = payload
         provider_source = payload.get("current_provider_source")
         source_text = f" ({provider_source})" if provider_source else ""
@@ -272,8 +414,9 @@ class MacApp:
         )
 
     def sync_now(self) -> None:
-        if not self.current_status:
-            self.refresh_status()
+        self.append_log("开始同步前先刷新状态。")
+        if not self.refresh_status_with_result():
+            return
         if self.current_status and int(self.current_status["movable_threads"]) <= 0:
             messagebox.showinfo("无需同步", "当前已经没有需要迁移到当前 provider 的线程。")
             self.append_log("同步跳过：没有需要迁移的线程。")
@@ -296,6 +439,64 @@ class MacApp:
             messagebox.showerror("同步失败", str(exc))
             self.append_log(f"同步失败: {exc}")
             return False
+
+    def restart_codex_and_sync(self) -> None:
+        threading.Thread(target=self.restart_codex_and_sync_worker, daemon=True).start()
+
+    def restart_codex_and_sync_worker(self) -> None:
+        if self.auto_sync_on_launch_var.get():
+            self.root.after(0, lambda: self.auto_sync_on_launch_var.set(False))
+            self.settings["auto_sync_when_codex_opens"] = False
+            self.settings.pop("auto_sync_on_launch", None)
+            try:
+                save_settings(self.settings)
+                uninstall_autosync_agent()
+                self.append_log_from_worker("已关闭“打开 Codex Desktop 时自动刷新并同步到当前”，避免与手动重启同步冲突。")
+            except Exception as exc:
+                self.show_error_from_worker("关闭自动同步失败", str(exc))
+                self.append_log_from_worker(f"关闭自动同步失败: {exc}")
+                return
+
+        self.append_log_from_worker("正在重启 Codex Desktop。")
+        try:
+            result = restart_codex_desktop()
+            self.append_log_from_worker(f"Codex 已重新打开: {result}")
+        except Exception as exc:
+            self.show_error_from_worker("重启 Codex 失败", str(exc))
+            self.append_log_from_worker(f"重启 Codex 失败: {exc}")
+            return
+
+        if wait_for_codex_backend():
+            self.append_log_from_worker("Codex 后台服务已启动，正在刷新状态。")
+        else:
+            self.append_log_from_worker("未在预期时间内检测到 Codex 后台服务，仍继续刷新状态。")
+
+        try:
+            status = run_backend("status", codex_home=self.get_codex_home())
+        except Exception as exc:
+            self.show_error_from_worker("刷新失败", str(exc))
+            self.append_log_from_worker(f"重启后同步跳过：无法读取当前状态。{exc}")
+            return
+
+        self.root.after(0, lambda status=status: self.apply_status_payload(status))
+        movable_threads = int(status.get("movable_threads") or 0)
+        if movable_threads <= 0:
+            self.append_log_from_worker("重启后同步跳过：没有需要迁移的线程。")
+            self.show_info_from_worker("无需同步", "Codex 已重启，当前没有需要同步的线程。")
+            return
+
+        self.append_log_from_worker(f"重启后发现 {movable_threads} 个可同步线程，正在同步。")
+        try:
+            payload = run_backend("sync", codex_home=self.get_codex_home())
+        except Exception as exc:
+            self.show_error_from_worker("同步失败", str(exc))
+            self.append_log_from_worker(f"同步失败: {exc}")
+            return
+
+        self.append_log_from_worker(f"同步完成。已移动 {payload['updated_rows']} 条线程。")
+        self.append_log_from_worker(f"备份文件: {payload['backup_path']}")
+        self.root.after(0, self.refresh_status)
+        self.show_info_from_worker("完成", "Codex 已重启，线程已同步到当前。")
 
     def manual_backup(self) -> None:
         try:

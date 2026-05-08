@@ -10,3 +10,4 @@ Thumbs.db
 # Local Codex data and generated backups should never be committed.
 .codex/
 history_sync_backups/
+dist/

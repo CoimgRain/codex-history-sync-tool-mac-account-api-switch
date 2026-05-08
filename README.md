@@ -9,16 +9,19 @@
 - 支持 OpenAI/Plus 账号登录：当 `config.toml` 没有 `model_provider` 时，会从 `auth.json` 和最近线程推断当前 provider。
 - 支持 API 登录：如果 `config.toml` 写了 `model_provider`，仍优先使用配置里的当前 provider。
 - 支持账号登录与 API 登录之间来回切换后刷新状态、一键同步历史。
-- 支持勾选“打开 Codex Desktop 时自动刷新并同步到当前”：开启后会安装本机 LaunchAgent，在 Codex Desktop 启动时自动同步。
+- 一键同步会先刷新最新状态：只要存在可同步线程就同步，没有可同步线程就跳过。
+- 支持勾选“打开 Codex Desktop 时自动刷新并同步到当前”：开启后会安装本机 LaunchAgent，在 Codex Desktop 启动时自动刷新状态，并在存在可同步线程时自动同步。
+- 提供高级功能“重启 Codex 并同步线程”：适合 CC Switch 或登录方式切换后使用，会自动重启 Codex、刷新状态并同步线程；不建议日常用户频繁使用。
+- 高级重启同步按钮已改为后台执行，避免 Codex 关闭或重开过程导致工具窗口卡死。
 - macOS `.app` 界面增加说明文字，直接双击即可使用。
 
 ## 直接下载使用
 
 推荐下载发布包里的：
 
-- `Codex History Sync Tool.app.zip`
+- `Codex-History-Sync-Tool-v1.4.dmg`
 
-下载后解压，双击 `Codex History Sync Tool.app` 即可打开。
+下载后打开 DMG，把 `Codex History Sync Tool.app` 拖到 `Applications`，再双击打开。
 
 如果 macOS 提示来自未验证开发者，可以在 Finder 中右键 app，选择“打开”，再确认一次。
 
@@ -30,7 +33,8 @@
 - 在同步前自动备份数据库、侧边栏索引和会话元数据
 - 从备份恢复数据库
 - 提供可直接双击运行的 macOS app bundle
-- 可选后台监听 Codex Desktop 启动，并在启动时自动刷新状态、自动同步
+- 可选后台监听 Codex Desktop 启动，并在启动时自动刷新状态；如果存在可同步线程，会自动同步
+- 可选高级重启同步：自动关闭并重新打开 Codex Desktop，随后刷新状态并同步线程
 
 ## 适用场景
 
@@ -59,10 +63,10 @@
 下载并解压：
 
 ```text
-Codex History Sync Tool.app.zip
+Codex-History-Sync-Tool-v1.4.dmg
 ```
 
-然后双击：
+打开 DMG 后把 app 拖到 Applications，然后双击：
 
 ```text
 Codex History Sync Tool.app
@@ -119,6 +123,8 @@ python3 ./sync_backend.py --json restore
 - 如果 Codex Desktop 正在写入数据库，工具会等待数据库空闲后继续
 - 如果同步完成后历史列表没有立刻刷新，重开一次 Codex Desktop
 - 自动同步开关会在本机 `~/Library/LaunchAgents` 下安装或移除 LaunchAgent；它只监听本机 Codex Desktop 是否启动，并调用本工具后端，不会上传任何数据
+- 如果要使用“高级: 重启 Codex 并同步线程”，建议先取消勾选“打开 Codex Desktop 时自动刷新并同步到当前”，避免手动重启同步和后台自动同步同时触发
+- “高级: 重启 Codex 并同步线程”不建议普通用户日常使用；它主要用于 CC Switch 或账号/API 切换后，需要让 Codex 重启并立刻同步历史的场景
 - 这个工具只修复本机可见性和 provider/model 归属，不会上传、同步或读取云端聊天记录
 
 ## 项目文件

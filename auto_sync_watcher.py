@@ -24,6 +24,23 @@ def append_log(path: Path | None, message: str) -> None:
         handle.write(line + "\n")
 
 
+def load_settings(path: Path | None) -> dict[str, object]:
+    if path is None or not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def save_settings(path: Path | None, settings: dict[str, object]) -> None:
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(settings, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 def codex_desktop_pids() -> set[int]:
     completed = subprocess.run(["ps", "-axo", "pid,args"], capture_output=True, text=True, check=False)
     pids: set[int] = set()
@@ -56,15 +73,33 @@ def run_backend(backend: Path, command: str, codex_home: str | None) -> dict[str
     return payload
 
 
-def sync_if_needed(backend: Path, codex_home: str | None, log_path: Path | None) -> None:
+def sync_if_needed(
+    backend: Path,
+    codex_home: str | None,
+    log_path: Path | None,
+    settings_path: Path | None,
+) -> None:
     status = run_backend(backend, "status", codex_home)
     movable_threads = int(status.get("movable_threads") or 0)
-    current_provider = status.get("current_provider")
+    current_provider = str(status.get("current_provider") or "").strip()
     append_log(log_path, f"Codex opened: provider={current_provider}, movable_threads={movable_threads}")
+    if not current_provider:
+        append_log(log_path, "Auto sync skipped: current provider is empty")
+        return
+
+    settings = load_settings(settings_path)
     if movable_threads <= 0:
+        settings["last_provider"] = current_provider
+        settings["last_provider_seen_at"] = datetime.now().isoformat(timespec="seconds")
+        save_settings(settings_path, settings)
+        append_log(log_path, "Auto sync skipped: no movable threads")
         return
 
     payload = run_backend(backend, "sync", codex_home)
+    settings["last_provider"] = current_provider
+    settings["last_provider_seen_at"] = datetime.now().isoformat(timespec="seconds")
+    settings["last_sync_at"] = datetime.now().isoformat(timespec="seconds")
+    save_settings(settings_path, settings)
     append_log(
         log_path,
         f"Auto sync completed: updated_rows={payload.get('updated_rows')}, "
@@ -75,6 +110,7 @@ def sync_if_needed(backend: Path, codex_home: str | None, log_path: Path | None)
 def watch(args: argparse.Namespace) -> int:
     backend = Path(args.backend).expanduser()
     log_path = Path(args.log).expanduser() if args.log else None
+    settings_path = Path(args.settings).expanduser() if args.settings else None
     if not backend.exists():
         append_log(log_path, f"backend does not exist: {backend}")
         return 1
@@ -86,7 +122,7 @@ def watch(args: argparse.Namespace) -> int:
     if args.once:
         if initial_open:
             time.sleep(args.initial_delay)
-            sync_if_needed(backend, args.codex_home, log_path)
+            sync_if_needed(backend, args.codex_home, log_path, settings_path)
         return 0
 
     while True:
@@ -94,7 +130,7 @@ def watch(args: argparse.Namespace) -> int:
         if is_open and not previous_open:
             time.sleep(args.initial_delay)
             try:
-                sync_if_needed(backend, args.codex_home, log_path)
+                sync_if_needed(backend, args.codex_home, log_path, settings_path)
             except Exception as exc:
                 append_log(log_path, f"auto sync failed: {exc}")
         previous_open = is_open
@@ -105,6 +141,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Watch Codex Desktop launches and auto-sync local history.")
     parser.add_argument("--backend", required=True, help="Path to sync_backend.py")
     parser.add_argument("--codex-home", help="Codex home directory; defaults to backend default")
+    parser.add_argument("--settings", help="Persistent settings JSON path")
     parser.add_argument("--log", help="Log file path")
     parser.add_argument("--poll", type=float, default=DEFAULT_POLL_SECONDS, help="Process polling interval")
     parser.add_argument("--initial-delay", type=float, default=DEFAULT_INITIAL_DELAY_SECONDS)
