@@ -4,9 +4,26 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RESOURCES_DIR="$(cd "$SCRIPT_DIR/../Resources" && pwd)"
 
-PYTHON_BIN="/opt/anaconda3/bin/python3"
-if [[ ! -x "$PYTHON_BIN" ]]; then
-  PYTHON_BIN="$(command -v python3)"
+PYTHON_BIN=""
+for candidate in \
+  "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3" \
+  "/opt/homebrew/bin/python3" \
+  "/opt/anaconda3/bin/python3" \
+  "/usr/bin/python3" \
+  "$(command -v python3)"
+do
+  if [[ -x "$candidate" ]] && "$candidate" - <<'PY' >/dev/null 2>&1
+import tkinter
+PY
+  then
+    PYTHON_BIN="$candidate"
+    break
+  fi
+done
+
+if [[ -z "$PYTHON_BIN" ]]; then
+  osascript -e 'display dialog "找不到可用的 Python tkinter。请先安装 python.org 版本 Python，或确认系统 Python 可用。" buttons {"OK"} default button "OK"' >/dev/null 2>&1 || true
+  exit 1
 fi
 
-exec "$PYTHON_BIN" "$RESOURCES_DIR/launch_ui_mac.py"
+exec "$PYTHON_BIN" "$RESOURCES_DIR/launch_ui_mac.py" "$@"
