@@ -384,19 +384,13 @@ def parse_session_record(path: Path) -> SessionRecord | None:
     if not SESSION_FILENAME_PATTERN.search(path.name):
         return None
 
-    try:
-        with path.open("r", encoding="utf-8", newline="") as handle:
-            first_line = handle.readline()
-    except OSError:
-        return None
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        first_line = handle.readline()
 
     if not first_line:
         return None
 
-    try:
-        item = json.loads(first_line.rstrip("\r\n"))
-    except json.JSONDecodeError:
-        return None
+    item = json.loads(first_line.rstrip("\r\n"))
     if item.get("type") != "session_meta":
         return None
 
@@ -494,10 +488,7 @@ def read_session_index(paths: Paths) -> OrderedDict[str, dict[str, str]]:
     for line in read_text(paths.session_index_path).splitlines():
         if not line.strip():
             continue
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+        entry = json.loads(line)
         thread_id = str(entry.get("id") or "").strip()
         if not thread_id:
             continue

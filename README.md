@@ -17,7 +17,6 @@
 - macOS `.app` 界面增加说明文字，直接双击即可使用。
 - v1.5.3 起，启动器会实际测试 `Python 3 + tkinter` 能否创建 macOS 图形窗口；如果不可用，会询问是否自动安装 python.org 官方 Python 3.13.13，安装完成后会自动继续打开工具。
 - v1.6.0 起，发布包分为轻量版和内置 Python 版。内置版不依赖用户本机 Python，适合没有 Python 环境或遇到闪退的用户。
-- v1.6.1 起，如果用户本机 `session_index.jsonl` 或单个会话 JSONL 中存在被截断的坏 JSON 行，工具会跳过坏行并继续刷新/同步，避免直接显示 `Unterminated string...`。
 
 ## 直接下载使用
 
@@ -25,9 +24,9 @@
 
 | 使用场景 | 下载文件 |
 | --- | --- |
-| 已经有可用的 Python 3 + tkinter，想下载最小体积 | `Codex-History-Sync-Tool-v1.6.1-Lite.dmg` |
-| 没有 Python 环境，或者轻量版双击闪退；Mac 是 Apple 芯片（M1/M2/M3/M4 等） | `Codex-History-Sync-Tool-v1.6.1-Apple-Silicon.dmg` |
-| 没有 Python 环境，或者轻量版双击闪退；Mac 是 Intel 处理器 | `Codex-History-Sync-Tool-v1.6.1-Intel.dmg` |
+| 已经有可用的 Python 3 + tkinter，想下载最小体积 | `Codex-History-Sync-Tool-v1.6.0-Lite.dmg` |
+| 没有 Python 环境，或者轻量版双击闪退；Mac 是 Apple 芯片（M1/M2/M3/M4 等） | `Codex-History-Sync-Tool-v1.6.0-Apple-Silicon.dmg` |
+| 没有 Python 环境，或者轻量版双击闪退；Mac 是 Intel 处理器 | `Codex-History-Sync-Tool-v1.6.0-Intel.dmg` |
 
 下载后打开 DMG，把 `Codex History Sync Tool.app` 拖到 `Applications`，再双击打开。
 
@@ -87,9 +86,9 @@
 下载并解压：
 
 ```text
-Codex-History-Sync-Tool-v1.6.1-Lite.dmg
-Codex-History-Sync-Tool-v1.6.1-Apple-Silicon.dmg
-Codex-History-Sync-Tool-v1.6.1-Intel.dmg
+Codex-History-Sync-Tool-v1.6.0-Lite.dmg
+Codex-History-Sync-Tool-v1.6.0-Apple-Silicon.dmg
+Codex-History-Sync-Tool-v1.6.0-Intel.dmg
 ```
 
 打开 DMG 后把 app 拖到 Applications，然后双击：
