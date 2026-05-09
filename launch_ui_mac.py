@@ -29,7 +29,48 @@ STARTUP_STATUS_SETTLE_SECONDS = 2.0
 STARTUP_SYNC_RETRY_LIMIT = 3
 
 
+def is_frozen_app() -> bool:
+    return bool(getattr(sys, "frozen", False))
+
+
+def run_backend_in_process(*args: str, codex_home: str | None = None) -> dict:
+    import sync_backend
+
+    command_args = list(args)
+    command = command_args[0] if command_args else "status"
+    paths = sync_backend.resolve_paths(codex_home)
+
+    if command == "status":
+        payload = sync_backend.get_status(paths)
+    elif command == "sync":
+        payload = sync_backend.sync_to_current_provider(paths)
+    elif command == "backup":
+        sync_backend.ensure_environment(paths)
+        backup_started_at = time.monotonic()
+        payload = {
+            "action": "backup",
+            "backup_path": str(sync_backend.make_backup(paths, "manual")),
+            "timing": {"total_ms": sync_backend.elapsed_ms(backup_started_at)},
+        }
+    elif command == "restore":
+        backup_path = None
+        if "--backup" in command_args:
+            index = command_args.index("--backup")
+            if index + 1 >= len(command_args):
+                raise RuntimeError("Missing value for --backup")
+            backup_path = command_args[index + 1]
+        payload = sync_backend.restore_backup(paths, backup_path)
+    else:
+        raise RuntimeError(f"Unsupported command: {command}")
+
+    payload["ok"] = True
+    return payload
+
+
 def run_backend(*args: str, codex_home: str | None = None, timeout_seconds: int | None = None) -> dict:
+    if is_frozen_app() or not BACKEND_PATH.exists():
+        return run_backend_in_process(*args, codex_home=codex_home)
+
     cmd = [sys.executable, str(BACKEND_PATH), "--json"]
     if codex_home:
         cmd.extend(["--codex-home", codex_home])
@@ -96,14 +137,26 @@ def unload_autosync_agent() -> None:
 
 
 def install_autosync_agent(codex_home: str) -> None:
-    if not WATCHER_PATH.exists():
+    if not is_frozen_app() and not WATCHER_PATH.exists():
         raise RuntimeError(f"找不到后台监听脚本: {WATCHER_PATH}")
 
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
     AUTOSYNC_PLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
-    plist = {
-        "Label": AUTOSYNC_LABEL,
-        "ProgramArguments": [
+    if is_frozen_app():
+        program_arguments = [
+            sys.executable,
+            "--run-watcher",
+            "--backend",
+            "__bundled__",
+            "--codex-home",
+            codex_home,
+            "--settings",
+            str(SETTINGS_PATH),
+            "--log",
+            str(AUTOSYNC_LOG_PATH),
+        ]
+    else:
+        program_arguments = [
             sys.executable,
             str(WATCHER_PATH),
             "--backend",
@@ -114,7 +167,11 @@ def install_autosync_agent(codex_home: str) -> None:
             str(SETTINGS_PATH),
             "--log",
             str(AUTOSYNC_LOG_PATH),
-        ],
+        ]
+
+    plist = {
+        "Label": AUTOSYNC_LABEL,
+        "ProgramArguments": program_arguments,
         "RunAtLoad": True,
         "KeepAlive": True,
         "StandardOutPath": str(AUTOSYNC_LOG_PATH),
@@ -705,6 +762,18 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    if len(sys.argv) > 1 and sys.argv[1] == "--run-backend":
+        import sync_backend
+
+        sys.argv = [sys.argv[0], *sys.argv[2:]]
+        return sync_backend.main()
+
+    if len(sys.argv) > 1 and sys.argv[1] == "--run-watcher":
+        import auto_sync_watcher
+
+        sys.argv = [sys.argv[0], *sys.argv[2:]]
+        return auto_sync_watcher.main()
+
     args = parse_args()
     if args.smoke_test:
         payload = run_backend("status", codex_home=args.codex_home)

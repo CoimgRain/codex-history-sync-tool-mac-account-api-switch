@@ -16,14 +16,21 @@
 - 刷新状态改为后台执行并显示进度；重启同步和自动同步增加超时保护，避免 Codex 刚启动时看起来没有反应。
 - macOS `.app` 界面增加说明文字，直接双击即可使用。
 - v1.5.3 起，启动器会实际测试 `Python 3 + tkinter` 能否创建 macOS 图形窗口；如果不可用，会询问是否自动安装 python.org 官方 Python 3.13.13，安装完成后会自动继续打开工具。
+- v1.6.0 起，发布包分为轻量版和内置 Python 版。内置版不依赖用户本机 Python，适合没有 Python 环境或遇到闪退的用户。
 
 ## 直接下载使用
 
-推荐下载发布包里的：
+发布包有 3 个 DMG，按下面规则下载：
 
-- `Codex-History-Sync-Tool-v1.5.3.dmg`
+| 使用场景 | 下载文件 |
+| --- | --- |
+| 已经有可用的 Python 3 + tkinter，想下载最小体积 | `Codex-History-Sync-Tool-v1.6.0-Lite.dmg` |
+| 没有 Python 环境，或者轻量版双击闪退；Mac 是 Apple 芯片（M1/M2/M3/M4 等） | `Codex-History-Sync-Tool-v1.6.0-Apple-Silicon.dmg` |
+| 没有 Python 环境，或者轻量版双击闪退；Mac 是 Intel 处理器 | `Codex-History-Sync-Tool-v1.6.0-Intel.dmg` |
 
 下载后打开 DMG，把 `Codex History Sync Tool.app` 拖到 `Applications`，再双击打开。
+
+不知道自己的 Mac 是哪种芯片，可以点左上角苹果菜单 -> “关于本机”。显示“芯片 Apple M...”就选 Apple Silicon；显示“处理器 Intel”就选 Intel。
 
 如果 macOS 提示来自未验证开发者，可以在 Finder 中右键 app，选择“打开”，再确认一次。
 
@@ -36,6 +43,8 @@
 ```
 
 如果自动安装失败，可以按日志提示手动安装 python.org 的 macOS Python 3 后再打开工具。
+
+如果不想让用户下载或安装任何 Python，直接使用 Apple Silicon 或 Intel 的内置 Python 版。内置版会使用 app 自己打包的 Python/Tk，不会修改系统 Python，也不会和用户电脑已有 Python 冲突。
 
 注意：本工具没有使用 Apple Developer ID 签名和公证，所以首次打开时 macOS 可能会拦截未验证开发者应用。这种情况不是程序崩溃，按上面的“右键打开”或“隐私与安全性”方式放行即可。如果是窗口一闪而过或没有任何提示，优先查看上面的启动器日志。
 
@@ -66,8 +75,8 @@
 ## macOS 运行环境
 
 - macOS 11 或更高版本
-- 系统可调用 `python3`
-- Python 内置 `tkinter` 可用
+- 轻量版需要系统可调用 `python3`，且 Python 内置 `tkinter` 可创建图形窗口
+- Apple Silicon / Intel 内置版不需要用户预先安装 Python
 - 本机存在 Codex Desktop 本地数据目录，通常是 `~/.codex`
 
 ## macOS 使用方式
@@ -77,7 +86,9 @@
 下载并解压：
 
 ```text
-Codex-History-Sync-Tool-v1.5.3.dmg
+Codex-History-Sync-Tool-v1.6.0-Lite.dmg
+Codex-History-Sync-Tool-v1.6.0-Apple-Silicon.dmg
+Codex-History-Sync-Tool-v1.6.0-Intel.dmg
 ```
 
 打开 DMG 后把 app 拖到 Applications，然后双击：

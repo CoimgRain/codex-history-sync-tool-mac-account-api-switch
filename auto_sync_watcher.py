@@ -64,7 +64,10 @@ def run_backend(
     codex_home: str | None,
     timeout_seconds: int | None = None,
 ) -> dict[str, object]:
-    cmd = [sys.executable, str(backend), "--json"]
+    if getattr(sys, "frozen", False) or str(backend) == "__bundled__":
+        cmd = [sys.executable, "--run-backend", "--json"]
+    else:
+        cmd = [sys.executable, str(backend), "--json"]
     if codex_home:
         cmd.extend(["--codex-home", codex_home])
     cmd.append(command)
@@ -130,7 +133,7 @@ def watch(args: argparse.Namespace) -> int:
     backend = Path(args.backend).expanduser()
     log_path = Path(args.log).expanduser() if args.log else None
     settings_path = Path(args.settings).expanduser() if args.settings else None
-    if not backend.exists():
+    if str(args.backend) != "__bundled__" and not backend.exists():
         append_log(log_path, f"backend does not exist: {backend}")
         return 1
 
