@@ -37,6 +37,8 @@
 
 如果自动安装失败，可以按日志提示手动安装 python.org 的 macOS Python 3 后再打开工具。
 
+注意：本工具没有使用 Apple Developer ID 签名和公证，所以首次打开时 macOS 可能会拦截未验证开发者应用。这种情况不是程序崩溃，按上面的“右键打开”或“隐私与安全性”方式放行即可。如果是窗口一闪而过或没有任何提示，优先查看上面的启动器日志。
+
 ## 这个工具能做什么
 
 - 查看当前本机 Codex 历史线程属于哪些 provider
@@ -94,6 +96,12 @@ python3 ./launch_ui_mac.py
 
 ```bash
 ./launch_ui_mac.command
+```
+
+`launch_ui_mac.command` 会优先调用内置 `.app` 的启动器，因此也会复用 Python/tkinter 检测、日志和自动安装提示。开发者如果想强制运行源码脚本，可以使用：
+
+```bash
+CODEX_HISTORY_SYNC_USE_SOURCE=1 ./launch_ui_mac.command
 ```
 
 ## 命令行用法
