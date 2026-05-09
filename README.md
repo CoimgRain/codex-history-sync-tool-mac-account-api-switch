@@ -15,13 +15,13 @@
 - 高级重启同步按钮已改为后台执行，避免 Codex 关闭或重开过程导致工具窗口卡死。
 - 刷新状态改为后台执行并显示进度；重启同步和自动同步增加超时保护，避免 Codex 刚启动时看起来没有反应。
 - macOS `.app` 界面增加说明文字，直接双击即可使用。
-- v1.5.2 起，如果双击 app 时检测不到可用的 `Python 3 + tkinter`，启动器会询问是否自动安装 python.org 官方 Python 3.13.13，安装完成后会自动继续打开工具。
+- v1.5.3 起，启动器会实际测试 `Python 3 + tkinter` 能否创建 macOS 图形窗口；如果不可用，会询问是否自动安装 python.org 官方 Python 3.13.13，安装完成后会自动继续打开工具。
 
 ## 直接下载使用
 
 推荐下载发布包里的：
 
-- `Codex-History-Sync-Tool-v1.5.2.dmg`
+- `Codex-History-Sync-Tool-v1.5.3.dmg`
 
 下载后打开 DMG，把 `Codex History Sync Tool.app` 拖到 `Applications`，再双击打开。
 
@@ -29,7 +29,7 @@
 
 如果 DMG 或 app 仍然打不开，可以打开系统设置里的“隐私与安全性”，在安全提示处选择“仍要打开”。
 
-如果双击后窗口一闪而过，通常是这台 Mac 没有可用的 `python3 + tkinter`。v1.5.2 起启动器会弹出提示，用户确认后会从 python.org 下载并安装官方 Python 3.13.13；安装过程会由 macOS 要求管理员授权。启动器日志会写到：
+如果双击后窗口一闪而过，通常是这台 Mac 没有可用的 `python3 + tkinter` 图形环境。v1.5.3 起启动器不再只检查 `import tkinter`，而是会实际创建一个隐藏 Tk 窗口；这可以避开 CommandLineTools Python 这类“能导入 tkinter、但创建窗口时崩溃”的环境。检测失败时，启动器会弹出提示，用户确认后会从 python.org 下载并安装官方 Python 3.13.13；安装过程会由 macOS 要求管理员授权。启动器日志会写到：
 
 ```text
 ~/Library/Logs/Codex History Sync Tool/launcher.log
@@ -77,7 +77,7 @@
 下载并解压：
 
 ```text
-Codex-History-Sync-Tool-v1.5.2.dmg
+Codex-History-Sync-Tool-v1.5.3.dmg
 ```
 
 打开 DMG 后把 app 拖到 Applications，然后双击：

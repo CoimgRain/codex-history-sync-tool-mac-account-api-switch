@@ -58,11 +58,17 @@ find_python_with_tkinter() {
   for candidate in "${candidates[@]}"; do
     log "Checking Python candidate: $candidate"
     if [[ -x "$candidate" ]] && "$candidate" - <<'PY' >/dev/null 2>&1
-import tkinter
+import tkinter as tk
+root = tk.Tk()
+root.withdraw()
+root.update_idletasks()
+root.destroy()
 PY
     then
       PYTHON_BIN="$candidate"
       return 0
+    else
+      log "Python candidate rejected or Tk GUI check failed: $candidate"
     fi
   done
 
