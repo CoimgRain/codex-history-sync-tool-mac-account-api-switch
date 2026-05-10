@@ -883,13 +883,22 @@ def get_status(paths: Paths) -> dict[str, object]:
         total_threads = int(conn.execute("SELECT COUNT(*) FROM threads").fetchone()[0])
         provider_movable = count_mismatched(conn, "model_provider", current_provider)
         model_movable = count_mismatched(conn, "model", current_model) if "model" in columns else None
-        where_parts = ["model_provider IS NULL OR model_provider <> ?"]
-        params: list[str] = [current_provider]
-        where_sql = " OR ".join(f"({part})" for part in where_parts)
-        db_movable_ids = {str(row["id"]) for row in conn.execute(f"SELECT id FROM threads WHERE {where_sql}", params)}
+        provider_where_sql = "(model_provider IS NULL OR model_provider <> ?)"
+        provider_pending_ids = {
+            str(row["id"])
+            for row in conn.execute(f"SELECT id FROM threads WHERE {provider_where_sql}", (current_provider,))
+        }
+        model_pending_ids: set[str] = set()
+        if "model" in columns and current_model:
+            model_where_sql = "(model IS NULL OR model <> ?)"
+            model_pending_ids = {
+                str(row["id"])
+                for row in conn.execute(f"SELECT id FROM threads WHERE {model_where_sql}", (current_model,))
+            }
         db_thread_query = "SELECT id FROM threads WHERE archived = 0" if "archived" in columns else "SELECT id FROM threads"
         db_thread_ids = {str(row["id"]) for row in conn.execute(db_thread_query)}
         missing_index_ids = db_thread_ids - set(index_entries) if should_check_index else set()
+        db_movable_ids = provider_pending_ids | model_pending_ids
         db_pending_ids = db_movable_ids | missing_index_ids
         session_pending_ids = session_movable_ids | session_meta_stats.provider_mismatched_thread_ids
 

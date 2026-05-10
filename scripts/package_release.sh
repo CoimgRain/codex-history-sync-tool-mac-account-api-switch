@@ -15,6 +15,7 @@ make_dmg() {
   rm -rf "$staging_dir" "$output_path"
   mkdir -p "$staging_dir"
   /usr/bin/ditto "$source_app" "$staging_dir/$APP_NAME"
+  clean_and_sign_app "$staging_dir/$APP_NAME"
   ln -s /Applications "$staging_dir/Applications"
   /usr/bin/hdiutil create \
     -volname "Codex History Sync Tool" \
@@ -33,6 +34,13 @@ copy_runtime_scripts() {
   if [[ -f "$app_path/Contents/Resources/launch_ui_mac.py" ]]; then
     /bin/cp "$ROOT_DIR/launch_ui_mac.py" "$app_path/Contents/Resources/"
   fi
+}
+
+clean_and_sign_app() {
+  local app_path="$1"
+  /usr/bin/xattr -cr "$app_path" 2>/dev/null || true
+  /usr/bin/codesign --force --deep --sign - "$app_path"
+  /usr/bin/codesign --verify --deep --strict --verbose=2 "$app_path"
 }
 
 rm -rf "$RELEASE_DIR/staging"

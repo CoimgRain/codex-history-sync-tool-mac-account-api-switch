@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import plistlib
@@ -27,14 +28,27 @@ CODEX_RESTART_WAIT_SECONDS = 20
 CODEX_QUIT_WAIT_SECONDS = 12
 STARTUP_STATUS_SETTLE_SECONDS = 2.0
 STARTUP_SYNC_RETRY_LIMIT = 3
+RESTART_SYNC_RETRY_LIMIT = 5
 
 
 def is_frozen_app() -> bool:
     return bool(getattr(sys, "frozen", False))
 
 
+def load_runtime_module(module_name: str, path: Path):
+    if path.exists():
+        spec = importlib.util.spec_from_file_location(f"_codex_history_sync_tool_{module_name}", path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"无法加载运行时模块: {path}")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        return module
+    return __import__(module_name)
+
+
 def run_backend_in_process(*args: str, codex_home: str | None = None) -> dict:
-    import sync_backend
+    sync_backend = load_runtime_module("sync_backend", BACKEND_PATH)
 
     command_args = list(args)
     command = command_args[0] if command_args else "status"
@@ -98,19 +112,25 @@ def status_signature(payload: dict) -> tuple[object, ...]:
         payload.get("current_model"),
         payload.get("total_threads"),
         payload.get("movable_threads"),
+        payload.get("model_movable_threads"),
         payload.get("movable_database_threads"),
         payload.get("movable_session_threads"),
+        payload.get("movable_session_meta_entries"),
         payload.get("provider_movable_session_meta_entries"),
         payload.get("missing_session_index_entries"),
     )
 
 
 def pending_work_count(payload: dict) -> int:
-    return (
-        int(payload.get("movable_threads") or 0)
+    database_pending = int(payload.get("movable_threads") or 0)
+    legacy_database_pending = (
+        int(payload.get("provider_movable_threads") or 0)
         + int(payload.get("model_movable_threads") or 0)
-        + int(payload.get("provider_movable_session_meta_entries") or 0)
+        + int(payload.get("missing_session_index_entries") or 0)
     )
+    if database_pending <= 0:
+        database_pending = legacy_database_pending
+    return database_pending + int(payload.get("movable_session_meta_entries") or 0)
 
 
 def load_settings() -> dict[str, object]:
@@ -200,7 +220,7 @@ def is_codex_desktop_running() -> bool:
     return completed.returncode == 0
 
 
-def restart_codex_desktop() -> str:
+def quit_codex_desktop() -> str:
     script = r'''
 on clickQuitConfirmation()
   set buttonNames to {"退出", "确认退出", "Quit", "OK", "确定", "继续退出"}
@@ -245,7 +265,7 @@ return clickQuitConfirmation()
     )
     output = (completed.stdout or completed.stderr).strip()
     if completed.returncode != 0:
-        raise RuntimeError(output or "无法通过 AppleScript 重启 Codex。")
+        raise RuntimeError(output or "无法通过 AppleScript 退出 Codex。")
 
     deadline = time.monotonic() + CODEX_QUIT_WAIT_SECONDS
     while time.monotonic() < deadline and is_codex_desktop_running():
@@ -254,6 +274,10 @@ return clickQuitConfirmation()
     if is_codex_desktop_running():
         raise RuntimeError("Codex 已收到退出请求，但在限定时间内没有完全退出。请手动确认退出弹窗后再试。")
 
+    return f"quit:{output or 'quit_requested'}"
+
+
+def open_codex_desktop() -> None:
     open_result = subprocess.run(
         ["/usr/bin/open", "-a", CODEX_APP_PATH],
         capture_output=True,
@@ -263,7 +287,11 @@ return clickQuitConfirmation()
     if open_result.returncode != 0:
         raise RuntimeError((open_result.stderr or open_result.stdout).strip() or f"无法打开 {CODEX_APP_PATH}。")
 
-    return f"restarted:{output or 'quit_requested'}"
+
+def restart_codex_desktop() -> str:
+    result = quit_codex_desktop()
+    open_codex_desktop()
+    return f"restarted:{result}"
 
 
 def wait_for_codex_backend(timeout_seconds: int = CODEX_RESTART_WAIT_SECONDS) -> bool:
@@ -636,6 +664,43 @@ class MacApp:
             self.append_log(f"同步失败: {exc}")
             return False
 
+    def sync_until_clean_from_worker(
+        self,
+        stage: str,
+        max_attempts: int,
+        settle_seconds: float = STARTUP_STATUS_SETTLE_SECONDS,
+    ) -> tuple[dict, dict | None]:
+        last_payload: dict | None = None
+        status = run_backend("status", codex_home=self.get_codex_home(), timeout_seconds=30)
+        self.root.after(0, lambda status=status: self.apply_status_payload(status))
+
+        for attempt in range(1, max_attempts + 1):
+            remaining = pending_work_count(status)
+            if remaining <= 0:
+                return status, last_payload
+
+            self.append_log_from_worker(f"{stage}发现 {remaining} 个待处理项，正在同步（第 {attempt}/{max_attempts} 次）。")
+            payload = run_backend("sync", codex_home=self.get_codex_home(), timeout_seconds=120)
+            last_payload = payload
+            self.append_log_from_worker(f"{stage}同步完成。已更新 {payload['updated_rows']} 条数据库记录。")
+            self.append_log_from_worker(f"已更新 {payload.get('updated_session_meta_entries', 0)} 条 session 元数据。")
+            self.append_log_from_worker(f"备份文件: {payload['backup_path']}")
+
+            payload_status = payload.get("status")
+            status = payload_status if isinstance(payload_status, dict) else run_backend(
+                "status",
+                codex_home=self.get_codex_home(),
+                timeout_seconds=30,
+            )
+            time.sleep(settle_seconds)
+            status = run_backend("status", codex_home=self.get_codex_home(), timeout_seconds=30)
+            self.root.after(0, lambda status=status: self.apply_status_payload(status))
+
+        remaining = pending_work_count(status)
+        if remaining > 0:
+            raise RuntimeError(f"{stage}同步重试 {max_attempts} 次后仍有 {remaining} 个待处理项。")
+        return status, last_payload
+
     def restart_codex_and_sync(self) -> None:
         threading.Thread(target=self.restart_codex_and_sync_worker, daemon=True).start()
 
@@ -653,47 +718,58 @@ class MacApp:
                 self.append_log_from_worker(f"关闭自动同步失败: {exc}")
                 return
 
-        self.append_log_from_worker("正在重启 Codex Desktop。")
+        self.append_log_from_worker("正在退出 Codex Desktop，退出后会先在关闭状态同步本地历史。")
         try:
-            result = restart_codex_desktop()
-            self.append_log_from_worker(f"Codex 已重新打开: {result}")
+            quit_result = quit_codex_desktop()
+            self.append_log_from_worker(f"Codex 已退出: {quit_result}")
         except Exception as exc:
-            self.show_error_from_worker("重启 Codex 失败", str(exc))
-            self.append_log_from_worker(f"重启 Codex 失败: {exc}")
+            self.show_error_from_worker("退出 Codex 失败", str(exc))
+            self.append_log_from_worker(f"退出 Codex 失败: {exc}")
+            return
+
+        try:
+            closed_status, _ = self.sync_until_clean_from_worker("Codex 关闭状态", RESTART_SYNC_RETRY_LIMIT)
+        except Exception as exc:
+            self.show_error_from_worker("关闭状态同步失败", str(exc))
+            self.append_log_from_worker(f"关闭状态同步失败: {exc}")
+            try:
+                open_codex_desktop()
+                self.append_log_from_worker("同步失败后已重新打开 Codex Desktop。")
+            except Exception as open_exc:
+                self.append_log_from_worker(f"同步失败后重新打开 Codex 也失败: {open_exc}")
+            return
+
+        if pending_work_count(closed_status) <= 0:
+            self.append_log_from_worker("关闭状态同步已清零，正在重新打开 Codex Desktop。")
+        else:
+            self.append_log_from_worker("关闭状态同步完成，仍将打开 Codex 后再做一次收尾检查。")
+
+        try:
+            open_codex_desktop()
+            self.append_log_from_worker("Codex 已重新打开。")
+        except Exception as exc:
+            self.show_error_from_worker("打开 Codex 失败", str(exc))
+            self.append_log_from_worker(f"打开 Codex 失败: {exc}")
             return
 
         if wait_for_codex_backend():
-            self.append_log_from_worker("Codex 后台服务已启动，正在刷新状态。")
+            self.append_log_from_worker("Codex 后台服务已启动，正在做启动后的收尾检查。")
         else:
-            self.append_log_from_worker("未在预期时间内检测到 Codex 后台服务，仍继续刷新状态。")
+            self.append_log_from_worker("未在预期时间内检测到 Codex 后台服务，仍继续做收尾检查。")
 
         try:
-            status = run_backend("status", codex_home=self.get_codex_home(), timeout_seconds=30)
-        except Exception as exc:
-            self.show_error_from_worker("刷新失败", str(exc))
-            self.append_log_from_worker(f"重启后同步跳过：无法读取当前状态。{exc}")
-            return
-
-        self.root.after(0, lambda status=status: self.apply_status_payload(status))
-        pending_threads = pending_work_count(status)
-        if pending_threads <= 0:
-            self.append_log_from_worker("重启后同步跳过：没有需要同步或更新的线程。")
-            self.show_info_from_worker("无需同步", "Codex 已重启，当前没有需要同步的线程。")
-            return
-
-        self.append_log_from_worker(f"重启后发现 {pending_threads} 个待同步或待更新线程，正在同步。")
-        try:
-            payload = run_backend("sync", codex_home=self.get_codex_home(), timeout_seconds=120)
+            final_status, payload = self.sync_until_clean_from_worker("Codex 启动后", RESTART_SYNC_RETRY_LIMIT)
         except Exception as exc:
             self.show_error_from_worker("同步失败", str(exc))
             self.append_log_from_worker(f"同步失败: {exc}")
+            self.root.after(0, self.refresh_status)
             return
 
-        self.append_log_from_worker(f"同步完成。已移动 {payload['updated_rows']} 条线程。")
-        self.append_log_from_worker(f"已更新 {payload.get('updated_session_meta_entries', 0)} 条 session 元数据。")
-        self.append_log_from_worker(f"备份文件: {payload['backup_path']}")
-        self.root.after(0, self.refresh_status)
-        self.show_info_from_worker("完成", "Codex 已重启，线程已同步到当前。")
+        self.root.after(0, lambda status=final_status: self.apply_status_payload(status))
+        if payload is None:
+            self.show_info_from_worker("无需同步", "Codex 已重启，当前没有需要同步或更新的线程。")
+        else:
+            self.show_info_from_worker("完成", "Codex 已重启，线程已同步到当前。")
 
     def manual_backup(self) -> None:
         try:
@@ -763,13 +839,13 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     if len(sys.argv) > 1 and sys.argv[1] == "--run-backend":
-        import sync_backend
+        sync_backend = load_runtime_module("sync_backend", BACKEND_PATH)
 
         sys.argv = [sys.argv[0], *sys.argv[2:]]
         return sync_backend.main()
 
     if len(sys.argv) > 1 and sys.argv[1] == "--run-watcher":
-        import auto_sync_watcher
+        auto_sync_watcher = load_runtime_module("auto_sync_watcher", WATCHER_PATH)
 
         sys.argv = [sys.argv[0], *sys.argv[2:]]
         return auto_sync_watcher.main()
