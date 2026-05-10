@@ -4,12 +4,6 @@
 
 这个 macOS 版本重点解决一个常见问题：在 OpenAI/Plus 账号登录和 API 登录之间切换后，本地历史明明还在，但 Codex Desktop 侧边栏看不到旧对话。
 
-## 相关项目：SwiftBar 余额监控
-
-如果你使用中转站或 API 账号，也可以看看我的另一个项目 [`swiftbar-balance-monitor`](https://github.com/CoimgRain/swiftbar-balance-monitor)：它可以让 Codex 帮你把余额、订阅用量和消耗做成 macOS 菜单栏监控。
-
-[![SwiftBar 余额监控截图](https://raw.githubusercontent.com/CoimgRain/swiftbar-balance-monitor/main/assets/swiftbar-balance-monitor-screenshot.png)](https://github.com/CoimgRain/swiftbar-balance-monitor)
-
 ## 这版新增
 
 - 支持 OpenAI/Plus 账号登录：当 `config.toml` 没有 `model_provider` 时，会从 `auth.json` 和最近线程推断当前 provider。
@@ -201,3 +195,9 @@ python3 ./sync_backend.py --json restore
 这个工具直接操作本机 Codex 的本地状态数据库。虽然已经做了自动备份，但仍建议你在使用前理解它的作用，并自行确认本地数据目录状态。
 
 本工具不会收集、上传或提交你的个人 Codex 数据；发布仓库只包含通用源码、app bundle 和说明文件。
+
+## 相关项目：SwiftBar 余额监控
+
+如果你使用中转站或 API 账号，也可以看看我的另一个项目 [`swiftbar-balance-monitor`](https://github.com/CoimgRain/swiftbar-balance-monitor)：它可以让 Codex 帮你把余额、订阅用量和消耗做成 macOS 菜单栏监控。
+
+[![SwiftBar 余额监控截图](https://raw.githubusercontent.com/CoimgRain/swiftbar-balance-monitor/main/assets/swiftbar-balance-monitor-screenshot.png)](https://github.com/CoimgRain/swiftbar-balance-monitor)
