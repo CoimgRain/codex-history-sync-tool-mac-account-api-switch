@@ -13,3 +13,4 @@ history_sync_backups/
 dist/
 build/
 dmg-root/
+release/
